@@ -13,7 +13,7 @@ services:
     build_command: pip install -r requirements.txt
     
     # Run command - this is the critical part
-    run_command: gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:8080
+    run_command: gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:$PORT
     
     # Environment
     environment_slug: python
