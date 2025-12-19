@@ -3,9 +3,12 @@ region: nyc
 
 services:
   - name: backend
-    # Use Dockerfile for deployment
-    dockerfile_path: backend/Dockerfile
-    source_dir: backend
+    # Build and run from root directory
+    build_command: pip install --upgrade pip && pip install -r requirements.txt
+    run_command: python -m uvicorn main:app --host 0.0.0.0 --port 8080
+    
+    # Environment
+    environment_slug: python
     
     # Instance configuration
     instance_count: 1
