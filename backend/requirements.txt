@@ -7,10 +7,8 @@ python-multipart==0.0.6
 pydantic==2.5.0
 pydantic-settings==2.1.0
 
-# Database (SQLAlchemy + Async Drivers)
+# Database (SQLAlchemy for ORM)
 sqlalchemy==2.0.23
-asyncpg==0.29.0       # <--- ADD THIS (Best Async Postgres driver)
-psycopg2-binary==2.9.9 # <--- ADD THIS (Just in case, handles Sync connections)
 
 # Auth & Security
 python-jose[cryptography]==3.3.0
@@ -20,14 +18,5 @@ python-dotenv==1.0.0
 # Utilities
 aiofiles==23.2.1
 
-# Database
-databases==0.8.0
-aiosqlite==0.19.0
-
-# CORS (built into FastAPI via fastapi.middleware.cors)
-
 # Production server
 gunicorn==21.2.0
-
-# REMOVED: fastapi-cors (It is built into FastAPI now)
-# REMOVED: databases (SQLAlchemy 2.0+ handles async natively now, 'databases' is often redundant and causes conflicts)
