@@ -14,8 +14,7 @@ aiofiles==23.2.1
 databases==0.8.0
 aiosqlite==0.19.0
 
-# CORS
-fastapi-cors==0.0.6
+# CORS (built into FastAPI via fastapi.middleware.cors)
 
-# Optional: For production
+# Production server
 gunicorn==21.2.0

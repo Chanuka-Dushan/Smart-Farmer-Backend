@@ -213,13 +213,90 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ## 🚢 Deployment
 
-### Backend (FastAPI)
-- Deploy to: Railway, Render, AWS, Google Cloud, Azure
-- Use `gunicorn` for production: `gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app`
+### DigitalOcean App Platform (Recommended)
 
-### Dashboard (Next.js)
-- Deploy to: Vercel, Netlify, AWS Amplify, Cloudflare Pages
-- Vercel is recommended for Next.js applications
+This project includes a `.do-app.yaml` configuration file for easy deployment to DigitalOcean App Platform.
+
+#### Quick Deploy
+
+1. **Push your code to GitHub/GitLab**
+   ```bash
+   git add .
+   git commit -m "Add deployment configuration"
+   git push origin main
+   ```
+
+2. **Create a new app on DigitalOcean**
+   - Go to [DigitalOcean App Platform](https://cloud.digitalocean.com/apps)
+   - Click "Create App"
+   - Connect your repository
+   - DigitalOcean will automatically detect the `.do-app.yaml` configuration
+
+3. **Deploy**
+   - Review the detected configuration
+   - Click "Next" and then "Create Resources"
+   - Your app will be built and deployed automatically
+
+#### Manual Configuration (if not using .do-app.yaml)
+
+If you prefer to configure manually:
+
+**Backend Service:**
+- **Source Directory**: `backend`
+- **Build Command**: `pip install -r requirements.txt`
+- **Run Command**: `uvicorn main:app --host 0.0.0.0 --port 8080`
+- **HTTP Port**: `8080`
+- **Environment**: Python 3.12
+
+**Environment Variables:**
+- `PORT`: `8080`
+- `PYTHONUNBUFFERED`: `1`
+
+#### Database Considerations
+
+> **⚠️ Important**: The current setup uses SQLite which is **not recommended for production** on DigitalOcean App Platform because:
+> - Data will be lost on each deployment
+> - SQLite doesn't work well with multiple instances
+>
+> **Recommended**: Migrate to DigitalOcean Managed PostgreSQL Database
+> 1. Create a managed PostgreSQL database in DigitalOcean
+> 2. Update `main.py` to use PostgreSQL instead of SQLite
+> 3. Add `psycopg2-binary` to `requirements.txt`
+> 4. Set `DATABASE_URL` environment variable
+
+#### Using doctl CLI
+
+Test your build locally before deploying:
+
+```bash
+# Install doctl
+# Windows (using Chocolatey)
+choco install doctl
+
+# macOS
+brew install doctl
+
+# Authenticate
+doctl auth init
+
+# Test build locally (from project root)
+doctl apps create --spec .do-app.yaml
+```
+
+---
+
+### Other Deployment Options
+
+#### Backend (FastAPI)
+- **Railway**: Connect GitHub repo, Railway auto-detects FastAPI
+- **Render**: Use `gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app`
+- **AWS/Google Cloud/Azure**: Deploy using Docker or platform-specific services
+
+#### Dashboard (Next.js)
+- **Vercel** (Recommended): Connect GitHub repo, auto-deploys
+- **Netlify**: Connect repo, configure build command: `npm run build`
+- **AWS Amplify**: Connect repo, configure build settings
+- **Cloudflare Pages**: Connect repo, auto-detects Next.js
 
 ## 📚 Learn More
 
