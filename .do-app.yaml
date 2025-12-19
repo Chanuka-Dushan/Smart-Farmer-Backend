@@ -7,10 +7,10 @@ services:
     source_dir: backend
     
     # Build configuration
-    build_command: pip install -r requirements.txt
+    build_command: pip install --upgrade pip && pip install -r requirements.txt
     
     # Run configuration
-    run_command: uvicorn main:app --host 0.0.0.0 --port 8080
+    run_command: uvicorn main:app --host 0.0.0.0 --port 8080 --workers 1
     
     # Environment
     environment_slug: python
