@@ -1,26 +1,38 @@
-from fastapi import FastAPI, HTTPException
+import os
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
-import sqlite3
-import uvicorn
+from sqlalchemy import create_engine, Column, String
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
 
-# Initialize the App
-app = FastAPI()
+# --- 1. Smart Database Connection ---
+# This looks for 'DATABASE_URL' in your environment (DigitalOcean).
+# If it can't find it, it defaults to 'sqlite:///./users.db' (Local).
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./users.db")
 
-# --- Database Setup ---
-def init_db():
-    """Initializes the SQLite database with a users table."""
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    # Create table if not exists
-    c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (email TEXT PRIMARY KEY, name TEXT, password TEXT)''')
-    conn.commit()
-    conn.close()
+# Fix for DigitalOcean's Postgres URL string format if needed
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# Run DB setup immediately when script starts
-init_db()
+# Configure the connection arguments based on the database type
+connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 
-# --- Data Models (Input Validation) ---
+engine = create_engine(DATABASE_URL, connect_args=connect_args)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# --- 2. Database Model (The Table) ---
+class User(Base):
+    __tablename__ = "users"
+    
+    email = Column(String, primary_key=True, index=True)
+    name = Column(String)
+    password = Column(String) # Note: In a real app, you should hash this!
+
+# Create the tables automatically
+Base.metadata.create_all(bind=engine)
+
+# --- 3. Pydantic Models (Input Validation) ---
 class UserRegister(BaseModel):
     name: str
     email: str
@@ -30,44 +42,47 @@ class UserLogin(BaseModel):
     email: str
     password: str
 
-# --- API Endpoints ---
+# --- 4. Database Dependency ---
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# --- 5. API Endpoints ---
+app = FastAPI()
 
 @app.get("/")
 def home():
     return {"message": "Smart Farmer Backend is Running!"}
 
 @app.post("/register")
-def register(user: UserRegister):
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    try:
-        # Insert user data into database
-        c.execute("INSERT INTO users (email, name, password) VALUES (?, ?, ?)", 
-                  (user.email, user.name, user.password))
-        conn.commit()
-    except sqlite3.IntegrityError:
-        conn.close()
+def register(user: UserRegister, db: Session = Depends(get_db)):
+    # Check if user already exists
+    existing_user = db.query(User).filter(User.email == user.email).first()
+    if existing_user:
         raise HTTPException(status_code=400, detail="Email already exists")
     
-    conn.close()
+    # Create new user
+    new_user = User(email=user.email, name=user.name, password=user.password)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
     return {"message": "User registered successfully"}
 
 @app.post("/login")
-def login(user: UserLogin):
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    # Check if email and password match
-    c.execute("SELECT * FROM users WHERE email=? AND password=?", 
-              (user.email, user.password))
-    account = c.fetchone()
-    conn.close()
-
-    if account:
-        # account[1] is the 'name' column
-        return {"message": "Login successful", "name": account[1]}
-    else:
+def login(user: UserLogin, db: Session = Depends(get_db)):
+    # Find user by email and password
+    db_user = db.query(User).filter(User.email == user.email, User.password == user.password).first()
+    
+    if not db_user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    return {"message": "Login successful", "name": db_user.name}
 
-# Entry point to run the server directly
+# Entry point
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
