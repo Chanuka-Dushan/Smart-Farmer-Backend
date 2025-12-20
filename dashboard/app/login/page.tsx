@@ -106,6 +106,7 @@ export default function LoginPage() {
           </form>
 
           {/* Demo Credentials */}
+          {/* 
           <div className="mt-8 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
             <p className="text-xs font-semibold text-blue-700 dark:text-blue-400 mb-2">
               Demo Credentials:
@@ -117,13 +118,16 @@ export default function LoginPage() {
               Password: admin@123
             </p>
           </div>
+          */}
 
           {/* Footer */}
           <p className="text-center text-xs text-gray-500 dark:text-gray-400 mt-8">
-            This is an admin-only dashboard. 
+            This is an admin-only dashboard.
+            {/* 
             <Link href="/register" className="text-green-600 hover:text-green-700 font-semibold ml-1">
               Create account
             </Link>
+            */}
           </p>
         </div>
       </div>

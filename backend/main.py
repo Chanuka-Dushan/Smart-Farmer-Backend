@@ -150,36 +150,37 @@ def health():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
 
-@app.post("/register")
-def register(user: UserRegister, db: Session = Depends(get_db)):
-    """
-    Register a new admin user
-    """
-    # Check if user already exists
-    existing_user = db.query(User).filter(User.email == user.email).first()
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
-    
-    # Hash password and create user
-    hashed_password = hash_password(user.password)
-    db_user = User(
-        name=user.name,
-        email=user.email,
-        hashed_password=hashed_password,
-        is_active=True
-    )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    
-    return {
-        "message": "Admin user created successfully",
-        "name": user.name,
-        "email": user.email
-    }
+# REGISTRATION ENDPOINT DISABLED - ADMIN ONLY LOGIN
+# @app.post("/register")
+# def register(user: UserRegister, db: Session = Depends(get_db)):
+#     """
+#     Register a new admin user
+#     """
+#     # Check if user already exists
+#     existing_user = db.query(User).filter(User.email == user.email).first()
+#     if existing_user:
+#         raise HTTPException(
+#             status_code=status.HTTP_400_BAD_REQUEST,
+#             detail="Email already registered"
+#         )
+#     
+#     # Hash password and create user
+#     hashed_password = hash_password(user.password)
+#     db_user = User(
+#         name=user.name,
+#         email=user.email,
+#         hashed_password=hashed_password,
+#         is_active=True
+#     )
+#     db.add(db_user)
+#     db.commit()
+#     db.refresh(db_user)
+#     
+#     return {
+#         "message": "Admin user created successfully",
+#         "name": user.name,
+#         "email": user.email
+#     }
 
 @app.post("/login", response_model=Token)
 def login(user: UserLogin, db: Session = Depends(get_db)):
