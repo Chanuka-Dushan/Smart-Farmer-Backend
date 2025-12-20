@@ -25,6 +25,10 @@ RUN pip install --upgrade pip && \
 # Copy application code
 COPY backend/ /app/
 
+# Copy and make entrypoint script executable
+COPY backend/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 # Create non-root user for security
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
@@ -32,5 +36,5 @@ USER appuser
 # Expose port
 EXPOSE 8080
 
-# Run with gunicorn for production
-CMD exec gunicorn main:app --worker-class uvicorn.workers.UvicornWorker --workers 4 --bind 0.0.0.0:8080 --access-logfile - --error-logfile -
+# Use entrypoint script
+ENTRYPOINT ["/app/entrypoint.sh"]
