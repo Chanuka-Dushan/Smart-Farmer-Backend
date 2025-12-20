@@ -12,6 +12,7 @@ import {
   Users
 } from "lucide-react"
 import { DashboardLayout } from "@/components/dashboard-layout"
+import { ProtectedRoute } from "@/components/ProtectedRoute"
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 
 const revenueData = [
@@ -58,6 +59,14 @@ function RevenueChart() {
 }
 
 export default function DashboardPage() {
+  return (
+    <ProtectedRoute>
+      <DashboardPageContent />
+    </ProtectedRoute>
+  )
+}
+
+function DashboardPageContent() {
   const stats = [
     {
       title: "Total Revenue",
@@ -213,5 +222,13 @@ export default function DashboardPage() {
         </Card>
       </div>
     </DashboardLayout>
+  )
+}
+
+export default function Home() {
+  return (
+    <ProtectedRoute>
+      <Dashboard />
+    </ProtectedRoute>
   )
 }

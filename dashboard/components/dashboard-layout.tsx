@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
 import {
   LayoutDashboard,
@@ -11,11 +11,13 @@ import {
   Package,
   ShoppingCart,
   Menu,
-  X
+  X,
+  LogOut
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useState } from "react"
 import { ThemeToggle } from "@/components/theme-toggle"
+import { useAuth } from "@/context/AuthContext"
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -28,7 +30,14 @@ const navigation = [
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+  const router = useRouter()
+  const { user, logout } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  const handleLogout = () => {
+    logout()
+    router.push('/login')
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
@@ -96,16 +105,25 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           </nav>
 
           {/* User Profile */}
-          <div className="p-4 border-t border-slate-200 dark:border-slate-800">
+          <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
             <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800">
               <div className="h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-semibold">
-                A
+                {user?.email?.charAt(0).toUpperCase() || 'A'}
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">Admin User</p>
-                <p className="text-xs text-muted-foreground truncate">admin@example.com</p>
+                <p className="text-sm font-medium truncate">Admin</p>
+                <p className="text-xs text-muted-foreground truncate">{user?.email || 'admin@farmerlk.me'}</p>
               </div>
             </div>
+            <Button
+              onClick={handleLogout}
+              variant="outline"
+              size="sm"
+              className="w-full justify-start text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20"
+            >
+              <LogOut className="h-4 w-4 mr-2" />
+              Logout
+            </Button>
           </div>
         </div>
       </aside>
