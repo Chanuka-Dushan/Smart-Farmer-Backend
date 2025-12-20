@@ -2,9 +2,11 @@
 
 const nextConfig = {
   reactStrictMode: true,
-  // Disable Turbopack due to path alias resolution issues
+  // Configure Turbopack to use dashboard as root
   experimental: {
-    turbopack: false,
+    turbopack: {
+      root: __dirname,
+    },
   },
 };
 
