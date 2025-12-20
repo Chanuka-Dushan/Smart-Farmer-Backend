@@ -58,15 +58,7 @@ function RevenueChart() {
   )
 }
 
-export default function DashboardPage() {
-  return (
-    <ProtectedRoute>
-      <DashboardPageContent />
-    </ProtectedRoute>
-  )
-}
-
-function DashboardPageContent() {
+function Dashboard() {
   const stats = [
     {
       title: "Total Revenue",
