@@ -67,6 +67,11 @@ app.add_middleware(
 def home():
     return {"message": "Smart Farmer Backend is Running!"}
 
+@app.get("/health")
+def health():
+    """Health check endpoint for monitoring"""
+    return {"status": "healthy"}
+
 @app.post("/register")
 def register(user: UserRegister, db: Session = Depends(get_db)):
     # Check if user already exists
@@ -95,4 +100,5 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
 # Entry point
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
