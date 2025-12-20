@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 
 export default function RegisterPage() {
+  const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -19,7 +20,7 @@ export default function RegisterPage() {
     setSuccess('')
 
     // Validation
-    if (!email || !password || !confirmPassword) {
+    if (!name || !email || !password || !confirmPassword) {
       setError('Please fill in all fields')
       return
     }
@@ -42,7 +43,7 @@ export default function RegisterPage() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ name, email, password }),
       })
 
       const data = await response.json()
@@ -109,6 +110,25 @@ export default function RegisterPage() {
 
           {/* Registration Form */}
           <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label
+                htmlFor="name"
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
+              >
+                Full Name
+              </label>
+              <input
+                id="name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Your full name"
+                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent dark:bg-slate-800 dark:text-white outline-none transition"
+                required
+                disabled={isLoading}
+              />
+            </div>
+
             <div>
               <label
                 htmlFor="email"
