@@ -48,7 +48,20 @@ export default function RegisterPage() {
       const data = await response.json()
 
       if (!response.ok) {
-        setError(data.detail || 'Registration failed')
+        let errorMessage = 'Registration failed'
+        if (data.detail) {
+          // Handle both string details and array of validation errors
+          if (typeof data.detail === 'string') {
+            errorMessage = data.detail
+          } else if (Array.isArray(data.detail)) {
+            errorMessage = data.detail
+              .map((err: any) => typeof err === 'string' ? err : err.msg || 'Unknown error')
+              .join(', ')
+          } else {
+            errorMessage = JSON.stringify(data.detail)
+          }
+        }
+        setError(errorMessage)
         return
       }
 

@@ -76,7 +76,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (!response.ok) {
         const error = await response.json()
-        throw new Error(error.detail || 'Login failed')
+        let errorMessage = 'Login failed'
+        
+        if (error.detail) {
+          // Handle both string details and array of validation errors
+          if (typeof error.detail === 'string') {
+            errorMessage = error.detail
+          } else if (Array.isArray(error.detail)) {
+            errorMessage = error.detail
+              .map((err: any) => typeof err === 'string' ? err : err.msg || 'Unknown error')
+              .join(', ')
+          } else {
+            errorMessage = JSON.stringify(error.detail)
+          }
+        }
+        
+        throw new Error(errorMessage)
       }
 
       const data = await response.json()
