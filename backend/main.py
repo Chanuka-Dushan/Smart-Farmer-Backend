@@ -82,6 +82,7 @@ class UserRegister(BaseModel):
 class UserLogin(BaseModel):
     email: str
     password: str
+    fcm_token: Optional[str] = None
 
 class Token(BaseModel):
     access_token: str
@@ -97,6 +98,7 @@ class UserRegister(BaseModel):
 class UserLogin(BaseModel):
     email: str
     password: str
+    fcm_token: Optional[str] = None
 
 class Token(BaseModel):
     access_token: str
