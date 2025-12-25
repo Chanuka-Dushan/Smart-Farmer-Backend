@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AuthProvider } from "@/context/AuthContext";
+import { Toaster } from "@/components/ui/toaster";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -15,8 +16,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Admin Dashboard",
-  description: "Modern admin dashboard with Next.js and shadcn/ui",
+  title: "Smart Farmer - Admin Dashboard",
+  description: "Modern admin dashboard for Smart Farmer application",
 };
 
 export default function RootLayout({
@@ -37,9 +38,11 @@ export default function RootLayout({
         >
           <AuthProvider>
             {children}
+            <Toaster />
           </AuthProvider>
         </ThemeProvider>
       </body>
     </html>
   );
 }
+
