@@ -4,13 +4,15 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const authHeader = request.headers.get('Authorization')
     const body = await request.json()
+    
+    const { id } = await params
 
-    const response = await fetch(`${BACKEND_URL}/admin/users/${params.id}`, {
+    const response = await fetch(`${BACKEND_URL}/admin/users/${id}`, {
       method: 'PUT',
       headers: {
         'Authorization': authHeader || '',
@@ -37,14 +39,16 @@ export async function PUT(
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const authHeader = request.headers.get('Authorization')
     const searchParams = request.nextUrl.searchParams
     const permanent = searchParams.get('permanent') || 'false'
+    
+    const { id } = await params
 
-    const response = await fetch(`${BACKEND_URL}/admin/users/${params.id}?permanent=${permanent}`, {
+    const response = await fetch(`${BACKEND_URL}/admin/users/${id}?permanent=${permanent}`, {
       method: 'DELETE',
       headers: {
         'Authorization': authHeader || '',
