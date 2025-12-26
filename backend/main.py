@@ -6,14 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
 from starlette.requests import Request
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, String
+from sqlalchemy import create_engine, Column, String, Integer, Boolean, Text, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 import secrets
 from dotenv import load_dotenv
-from sqlalchemy import Integer, Boolean
+from sqlalchemy import Integer, Boolean, Text, DateTime
 
 # Load environment variables from .env file
 load_dotenv()
@@ -69,6 +69,43 @@ class AppUser(Base):
     is_banned = Column(Boolean, default=False)
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat(), onupdate=lambda: datetime.now(timezone.utc).isoformat())
+
+class Seller(Base):
+    """Seller Model"""
+    __tablename__ = "sellers"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    business_name = Column(String(255), nullable=False)
+    owner_firstname = Column(String(100), nullable=False)
+    owner_lastname = Column(String(100), nullable=False)
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    phone_number = Column(String(20), nullable=True)
+    hashed_password = Column(String(255), nullable=False)
+    business_address = Column(Text, nullable=True)
+    business_description = Column(Text, nullable=True)
+    # Location fields
+    latitude = Column(String(50), nullable=True)
+    longitude = Column(String(50), nullable=True)
+    shop_location_name = Column(String(255), nullable=True)
+    is_verified = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True)
+    fcm_token = Column(String(500), nullable=True)
+    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat(), onupdate=lambda: datetime.now(timezone.utc).isoformat())
+
+class Notification(Base):
+    """Notification Model"""
+    __tablename__ = "notifications"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    title = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    user_type = Column(String(50), nullable=False)  # 'app_user', 'seller', 'all'
+    target_user_id = Column(Integer, nullable=True)  # Specific user ID, null for broadcast
+    sent_by = Column(Integer, nullable=False)  # Admin ID who sent the notification
+    is_sent = Column(Boolean, default=False)
+    sent_at = Column(String, nullable=True)
+    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
 # Create the tables automatically
 Base.metadata.create_all(bind=engine)
@@ -160,6 +197,80 @@ class MessageResponse(BaseModel):
     message: str
     success: bool = True
 
+# Seller Schemas
+class SellerRegister(BaseModel):
+    business_name: str
+    owner_firstname: str
+    owner_lastname: str
+    email: str
+    password: str
+    phone_number: Optional[str] = None
+    business_address: Optional[str] = None
+    business_description: Optional[str] = None
+    fcm_token: Optional[str] = None
+
+class SellerUpdate(BaseModel):
+    business_name: Optional[str] = None
+    owner_firstname: Optional[str] = None
+    owner_lastname: Optional[str] = None
+    phone_number: Optional[str] = None
+    business_address: Optional[str] = None
+    business_description: Optional[str] = None
+    latitude: Optional[str] = None
+    longitude: Optional[str] = None
+    shop_location_name: Optional[str] = None
+    fcm_token: Optional[str] = None
+
+class SellerResponse(BaseModel):
+    id: int
+    business_name: str
+    owner_firstname: str
+    owner_lastname: str
+    email: str
+    phone_number: Optional[str]
+    business_address: Optional[str]
+    business_description: Optional[str]
+    latitude: Optional[str]
+    longitude: Optional[str]
+    shop_location_name: Optional[str]
+    is_verified: bool
+    is_active: bool
+    created_at: str
+    updated_at: str
+
+    class Config:
+        from_attributes = True
+
+class AdminUpdateSeller(BaseModel):
+    business_name: Optional[str] = None
+    owner_firstname: Optional[str] = None
+    owner_lastname: Optional[str] = None
+    email: Optional[str] = None
+    phone_number: Optional[str] = None
+    business_address: Optional[str] = None
+    business_description: Optional[str] = None
+
+# Notification Schemas
+class NotificationCreate(BaseModel):
+    title: str
+    message: str
+    user_type: str  # 'app_user', 'seller', 'all'
+    target_user_id: Optional[int] = None  # Specific user ID, null for broadcast
+
+class NotificationResponse(BaseModel):
+    id: int
+    title: str
+    message: str
+    user_type: str
+    target_user_id: Optional[int]
+    sent_by: int
+    is_sent: bool
+    sent_at: Optional[str]
+    created_at: str
+
+    class Config:
+        from_attributes = True
+
 # --- 4. Database Dependency ---
 def get_db():
     db = SessionLocal()
@@ -215,6 +326,47 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Invalid token")
     
     return {"email": token_data.email}
+
+async def get_current_seller(request: Request, db: Session = Depends(get_db)) -> Seller:
+    """Validate JWT token and return seller"""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+    
+    try:
+        scheme, token = auth_header.split()
+        if scheme.lower() != "bearer":
+            raise HTTPException(status_code=401, detail="Invalid authentication scheme")
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        user_type: str = payload.get("user_type", "admin")
+        
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        
+        # For sellers, verify they exist and are active
+        if user_type == "seller":
+            seller = db.query(Seller).filter(
+                Seller.email == email,
+                Seller.is_active == True
+            ).first()
+            
+            if not seller:
+                raise HTTPException(status_code=401, detail="Seller not found")
+            
+            return seller
+        else:
+            raise HTTPException(status_code=403, detail="Invalid user type")
+            
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 async def get_current_app_user(request: Request, db: Session = Depends(get_db)) -> AppUser:
     """Validate JWT token and return app user"""
@@ -366,7 +518,362 @@ async def get_current_admin(current_user: dict = Depends(get_current_user)):
         "role": "admin"
     }
 
-# ============= MOBILE APP USER ENDPOINTS =============
+# ============= SELLER ENDPOINTS =============
+
+@app.post("/api/sellers/register", response_model=Token, status_code=status.HTTP_201_CREATED)
+def register_seller(seller_data: SellerRegister, db: Session = Depends(get_db)):
+    """Register a new seller"""
+    # Check if email already exists
+    existing_seller = db.query(Seller).filter(
+        Seller.email == seller_data.email
+    ).first()
+    
+    if existing_seller:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    # Create new seller
+    hashed_password = hash_password(seller_data.password)
+    new_seller = Seller(
+        business_name=seller_data.business_name,
+        owner_firstname=seller_data.owner_firstname,
+        owner_lastname=seller_data.owner_lastname,
+        email=seller_data.email,
+        hashed_password=hashed_password,
+        phone_number=seller_data.phone_number,
+        business_address=seller_data.business_address,
+        business_description=seller_data.business_description,
+        fcm_token=seller_data.fcm_token,
+        is_verified=False,
+        is_active=True
+    )
+    
+    db.add(new_seller)
+    db.commit()
+    db.refresh(new_seller)
+    
+    # Create access token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": new_seller.email, "user_type": "seller"},
+        expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": new_seller.id,
+            "email": new_seller.email,
+            "business_name": new_seller.business_name,
+            "owner_firstname": new_seller.owner_firstname,
+            "owner_lastname": new_seller.owner_lastname
+        }
+    }
+
+@app.post("/api/sellers/login", response_model=Token)
+def login_seller(login_data: UserLogin, db: Session = Depends(get_db)):
+    """Login for sellers"""
+    # Find seller
+    seller = db.query(Seller).filter(
+        Seller.email == login_data.email,
+        Seller.is_active == True
+    ).first()
+    
+    if not seller or not verify_password(login_data.password, seller.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
+        )
+    
+    # Create access token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": seller.email, "user_type": "seller"},
+        expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": seller.id,
+            "email": seller.email,
+            "business_name": seller.business_name,
+            "owner_firstname": seller.owner_firstname,
+            "owner_lastname": seller.owner_lastname
+        }
+    }
+
+@app.get("/api/sellers/me", response_model=SellerResponse)
+async def get_my_seller_profile(current_seller: Seller = Depends(get_current_seller)):
+    """Get current seller's profile"""
+    return current_seller
+
+@app.put("/api/sellers/me", response_model=SellerResponse)
+async def update_my_seller_profile(
+    update_data: SellerUpdate,
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Update current seller's profile"""
+    if update_data.business_name is not None:
+        current_seller.business_name = update_data.business_name
+    if update_data.owner_firstname is not None:
+        current_seller.owner_firstname = update_data.owner_firstname
+    if update_data.owner_lastname is not None:
+        current_seller.owner_lastname = update_data.owner_lastname
+    if update_data.phone_number is not None:
+        current_seller.phone_number = update_data.phone_number
+    if update_data.business_address is not None:
+        current_seller.business_address = update_data.business_address
+    if update_data.business_description is not None:
+        current_seller.business_description = update_data.business_description
+    if update_data.fcm_token is not None:
+        current_seller.fcm_token = update_data.fcm_token
+    
+    current_seller.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    db.refresh(current_seller)
+    
+    return current_seller
+
+@app.put("/api/sellers/me/password", response_model=MessageResponse)
+async def update_my_seller_password(
+    password_data: PasswordUpdate,
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Update current seller's password"""
+    if not verify_password(password_data.old_password, current_seller.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect"
+        )
+    
+    current_seller.hashed_password = hash_password(password_data.new_password)
+    db.commit()
+    
+    return MessageResponse(message="Password updated successfully", success=True)
+
+@app.put("/api/sellers/me/location", response_model=SellerResponse)
+async def update_seller_location(
+    latitude: str,
+    longitude: str,
+    shop_location_name: Optional[str] = None,
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Update seller's shop location"""
+    current_seller.latitude = latitude
+    current_seller.longitude = longitude
+    if shop_location_name is not None:
+        current_seller.shop_location_name = shop_location_name
+    
+    current_seller.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    db.refresh(current_seller)
+    
+    return current_seller
+
+@app.get("/api/sellers/locations")
+async def get_seller_locations(
+    db: Session = Depends(get_db)
+):
+    """Get all verified and active seller locations for map display"""
+    sellers = db.query(Seller).filter(
+        Seller.is_active == True,
+        Seller.is_verified == True,
+        Seller.latitude.isnot(None),
+        Seller.longitude.isnot(None)
+    ).all()
+    
+    return [
+        {
+            "id": seller.id,
+            "business_name": seller.business_name,
+            "latitude": seller.latitude,
+            "longitude": seller.longitude,
+            "shop_location_name": seller.shop_location_name,
+            "business_address": seller.business_address,
+            "phone_number": seller.phone_number,
+            "business_description": seller.business_description,
+        }
+        for seller in sellers
+    ]
+
+# ============= NOTIFICATION ENDPOINTS =============
+
+@app.post("/api/notifications/send", response_model=MessageResponse)
+async def send_notification(
+    notification_data: NotificationCreate,
+    current_admin: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Send notification to users (Admin only)"""
+    from fcm_utils import send_notification as fcm_send
+    
+    # Get admin ID
+    admin = db.query(User).filter(User.email == current_admin["email"]).first()
+    if not admin:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    
+    # Create notification record
+    new_notification = Notification(
+        title=notification_data.title,
+        message=notification_data.message,
+        user_type=notification_data.user_type,
+        target_user_id=notification_data.target_user_id,
+        sent_by=admin.id,
+        is_sent=False
+    )
+    
+    db.add(new_notification)
+    db.commit()
+    db.refresh(new_notification)
+    
+    # Send notifications based on user type
+    success_count = 0
+    total_count = 0
+    
+    if notification_data.user_type == "all":
+        # Send to all app users and sellers
+        app_users = db.query(AppUser).filter(
+            AppUser.is_deleted == False,
+            AppUser.is_banned == False,
+            AppUser.fcm_token.isnot(None)
+        ).all()
+        
+        sellers = db.query(Seller).filter(
+            Seller.is_active == True,
+            Seller.fcm_token.isnot(None)
+        ).all()
+        
+        all_users = app_users + sellers
+        total_count = len(all_users)
+        
+        for user in all_users:
+            if hasattr(user, 'fcm_token') and user.fcm_token:
+                result = fcm_send(
+                    fcm_token=user.fcm_token,
+                    title=notification_data.title,
+                    body=notification_data.message
+                )
+                if "error" not in result:
+                    success_count += 1
+                    
+    elif notification_data.user_type == "app_user":
+        if notification_data.target_user_id:
+            # Send to specific app user
+            user = db.query(AppUser).filter(
+                AppUser.id == notification_data.target_user_id,
+                AppUser.is_deleted == False,
+                AppUser.is_banned == False,
+                AppUser.fcm_token.isnot(None)
+            ).first()
+            
+            if user:
+                total_count = 1
+                result = fcm_send(
+                    fcm_token=user.fcm_token,
+                    title=notification_data.title,
+                    body=notification_data.message
+                )
+                if "error" not in result:
+                    success_count = 1
+        else:
+            # Send to all app users
+            app_users = db.query(AppUser).filter(
+                AppUser.is_deleted == False,
+                AppUser.is_banned == False,
+                AppUser.fcm_token.isnot(None)
+            ).all()
+            
+            total_count = len(app_users)
+            for user in app_users:
+                result = fcm_send(
+                    fcm_token=user.fcm_token,
+                    title=notification_data.title,
+                    body=notification_data.message
+                )
+                if "error" not in result:
+                    success_count += 1
+                    
+    elif notification_data.user_type == "seller":
+        if notification_data.target_user_id:
+            # Send to specific seller
+            seller = db.query(Seller).filter(
+                Seller.id == notification_data.target_user_id,
+                Seller.is_active == True,
+                Seller.fcm_token.isnot(None)
+            ).first()
+            
+            if seller:
+                total_count = 1
+                result = fcm_send(
+                    fcm_token=seller.fcm_token,
+                    title=notification_data.title,
+                    body=notification_data.message
+                )
+                if "error" not in result:
+                    success_count = 1
+        else:
+            # Send to all sellers
+            sellers = db.query(Seller).filter(
+                Seller.is_active == True,
+                Seller.fcm_token.isnot(None)
+            ).all()
+            
+            total_count = len(sellers)
+            for seller in sellers:
+                result = fcm_send(
+                    fcm_token=seller.fcm_token,
+                    title=notification_data.title,
+                    body=notification_data.message
+                )
+                if "error" not in result:
+                    success_count += 1
+    
+    # Update notification status
+    new_notification.is_sent = True
+    new_notification.sent_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    
+    return MessageResponse(
+        message=f"Notification sent to {success_count} out of {total_count} users",
+        success=True
+    )
+
+@app.get("/api/notifications", response_model=list[NotificationResponse])
+async def get_notifications(
+    skip: int = 0,
+    limit: int = 100,
+    current_admin: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all notifications (Admin only)"""
+    notifications = db.query(Notification).offset(skip).limit(limit).all()
+    return notifications
+
+@app.get("/api/users/notifications")
+async def get_user_notifications(
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Get notifications for current app user (placeholder - implement based on user notification history)"""
+    # For now, return empty list - you can implement notification history later
+    return []
+
+@app.get("/api/sellers/notifications")
+async def get_seller_notifications(
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Get notifications for current seller (placeholder - implement based on seller notification history)"""
+    # For now, return empty list - you can implement notification history later
+    return []
 
 @app.post("/api/users/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 def register_app_user(user_data: AppUserRegister, db: Session = Depends(get_db)):
@@ -758,6 +1265,199 @@ async def delete_user(
         user.updated_at = datetime.now(timezone.utc).isoformat()
         db.commit()
         return MessageResponse(message="User soft deleted", success=True)
+
+# ============= ADMIN SELLER MANAGEMENT ENDPOINTS =============
+
+@app.get("/admin/sellers")
+async def get_all_sellers(
+    skip: int = 0,
+    limit: int = 100,
+    search: Optional[str] = None,
+    include_inactive: bool = False,
+    current_admin: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all sellers for dashboard view (Admin only)"""
+    from sqlalchemy import or_
+    
+    query = db.query(Seller)
+    
+    # Filter inactive sellers
+    if not include_inactive:
+        query = query.filter(Seller.is_active == True)
+    
+    # Search filter
+    if search:
+        search_filter = f"%{search}%"
+        query = query.filter(
+            or_(
+                Seller.business_name.ilike(search_filter),
+                Seller.owner_firstname.ilike(search_filter),
+                Seller.owner_lastname.ilike(search_filter),
+                Seller.email.ilike(search_filter)
+            )
+        )
+    
+    # Get sellers with pagination
+    sellers = query.offset(skip).limit(limit).all()
+    
+    return [
+        {
+            "id": seller.id,
+            "business_name": seller.business_name,
+            "owner_firstname": seller.owner_firstname,
+            "owner_lastname": seller.owner_lastname,
+            "email": seller.email,
+            "phone_number": seller.phone_number,
+            "business_address": seller.business_address,
+            "business_description": seller.business_description,
+            "is_verified": seller.is_verified,
+            "is_active": seller.is_active,
+            "created_at": seller.created_at,
+            "updated_at": seller.updated_at
+        }
+        for seller in sellers
+    ]
+
+@app.get("/admin/sellers/stats")
+async def get_seller_stats(
+    current_admin: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get seller statistics for dashboard (Admin only)"""
+    from sqlalchemy import func
+    
+    total_sellers = db.query(func.count(Seller.id)).scalar()
+    active_sellers = db.query(func.count(Seller.id)).filter(
+        Seller.is_active == True
+    ).scalar()
+    verified_sellers = db.query(func.count(Seller.id)).filter(
+        Seller.is_verified == True,
+        Seller.is_active == True
+    ).scalar()
+    
+    return {
+        "total_sellers": total_sellers or 0,
+        "active_sellers": active_sellers or 0,
+        "verified_sellers": verified_sellers or 0
+    }
+
+@app.get("/admin/sellers/{seller_id}", response_model=SellerResponse)
+async def get_seller_by_id(
+    seller_id: int,
+    current_admin: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get specific seller details by ID (Admin only)"""
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+    
+    if not seller:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Seller not found")
+    
+    return seller
+
+@app.put("/admin/sellers/{seller_id}", response_model=SellerResponse)
+async def update_seller(
+    seller_id: int,
+    update_data: AdminUpdateSeller,
+    current_admin: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update seller information (Admin only)"""
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+    
+    if not seller:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Seller not found")
+    
+    # Check if email is being changed and if it's already taken
+    if update_data.email and update_data.email != seller.email:
+        existing_seller = db.query(Seller).filter(
+            Seller.email == update_data.email
+        ).first()
+        if existing_seller:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already in use"
+            )
+        seller.email = update_data.email
+    
+    # Update other fields if provided
+    if update_data.business_name is not None:
+        seller.business_name = update_data.business_name
+    if update_data.owner_firstname is not None:
+        seller.owner_firstname = update_data.owner_firstname
+    if update_data.owner_lastname is not None:
+        seller.owner_lastname = update_data.owner_lastname
+    if update_data.phone_number is not None:
+        seller.phone_number = update_data.phone_number
+    if update_data.business_address is not None:
+        seller.business_address = update_data.business_address
+    if update_data.business_description is not None:
+        seller.business_description = update_data.business_description
+    
+    seller.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    db.refresh(seller)
+    
+    return seller
+
+@app.put("/admin/sellers/{seller_id}/verify", response_model=SellerResponse)
+async def verify_seller(
+    seller_id: int,
+    is_verified: bool,
+    current_admin: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Verify or unverify a seller (Admin only)"""
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+    
+    if not seller:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Seller not found")
+    
+    seller.is_verified = is_verified
+    seller.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    db.refresh(seller)
+    
+    return seller
+
+@app.put("/admin/sellers/{seller_id}/activate", response_model=SellerResponse)
+async def activate_deactivate_seller(
+    seller_id: int,
+    is_active: bool,
+    current_admin: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Activate or deactivate a seller (Admin only)"""
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+    
+    if not seller:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Seller not found")
+    
+    seller.is_active = is_active
+    seller.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    db.refresh(seller)
+    
+    return seller
+
+@app.delete("/admin/sellers/{seller_id}", response_model=MessageResponse)
+async def delete_seller(
+    seller_id: int,
+    current_admin: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a seller (Admin only)"""
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+    
+    if not seller:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Seller not found")
+    
+    # Permanent deletion
+    db.delete(seller)
+    db.commit()
+    
+    return MessageResponse(message="Seller deleted successfully", success=True)
 
 # Entry point
 if __name__ == "__main__":

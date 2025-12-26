@@ -12,7 +12,9 @@ import {
   ShoppingCart,
   Menu,
   X,
-  LogOut
+  LogOut,
+  Store,
+  Bell
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useState } from "react"
@@ -23,6 +25,8 @@ const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
   { name: "Users", href: "/users", icon: Users },
+  { name: "Sellers", href: "/sellers", icon: Store },
+  { name: "Notifications", href: "/notifications", icon: Bell },
   { name: "Products", href: "/products", icon: Package },
   { name: "Orders", href: "/orders", icon: ShoppingCart },
   { name: "Settings", href: "/settings", icon: Settings },
