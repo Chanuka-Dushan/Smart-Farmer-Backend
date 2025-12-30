@@ -1,9 +1,10 @@
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, String, Integer, Boolean, Text, DateTime
@@ -65,10 +66,25 @@ class AppUser(Base):
     hashed_password = Column(String(255), nullable=False)
     fcm_token = Column(String(500), nullable=True)
     address = Column(String(500), nullable=True)
+    profile_picture_url = Column(String(500), nullable=True)
+    google_id = Column(String(255), nullable=True)
+    facebook_id = Column(String(255), nullable=True)
+    is_social_login = Column(Boolean, default=False)
     is_deleted = Column(Boolean, default=False)
     is_banned = Column(Boolean, default=False)
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat(), onupdate=lambda: datetime.now(timezone.utc).isoformat())
+
+class PasswordReset(Base):
+    """Password Reset Token Model"""
+    __tablename__ = "password_resets"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    email = Column(String(255), index=True, nullable=False)
+    token = Column(String(255), unique=True, index=True, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    is_used = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class Seller(Base):
     """Seller Model"""
@@ -161,6 +177,16 @@ class AppUserUpdate(BaseModel):
     lastname: Optional[str] = None
     phone_number: Optional[str] = None
     address: Optional[str] = None
+    profile_picture_url: Optional[str] = None
+    fcm_token: Optional[str] = None
+
+class SocialLoginRequest(BaseModel):
+    email: str
+    firstname: str
+    lastname: str
+    social_id: str
+    provider: str
+    profile_picture_url: Optional[str] = None
     fcm_token: Optional[str] = None
 
 class AppUserResponse(BaseModel):
@@ -170,6 +196,8 @@ class AppUserResponse(BaseModel):
     email: str
     phone_number: Optional[str]
     address: Optional[str]
+    profile_picture_url: Optional[str]
+    is_social_login: bool
     is_banned: bool
     is_deleted: bool
     created_at: str
@@ -196,6 +224,13 @@ class PasswordUpdate(BaseModel):
 class MessageResponse(BaseModel):
     message: str
     success: bool = True
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
 
 # Seller Schemas
 class SellerRegister(BaseModel):
@@ -417,6 +452,10 @@ async def get_current_app_user(request: Request, db: Session = Depends(get_db)) 
 
 # --- 5. API Endpoints ---
 app = FastAPI()
+
+# Mount static files for profile pictures
+os.makedirs("uploads/profile_pictures", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Add CORS middleware
 app.add_middleware(
@@ -966,6 +1005,162 @@ def login_app_user(login_data: UserLogin, db: Session = Depends(get_db)):
         }
     }
 
+@app.post("/api/users/social-login", response_model=Token)
+def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(get_db)):
+    """Social login for mobile app users (Google/Facebook)"""
+    # Find user by email
+    user = db.query(AppUser).filter(
+        AppUser.email == login_data.email,
+        AppUser.is_deleted == False
+    ).first()
+    
+    if not user:
+        # Create new user if not exists
+        user = AppUser(
+            firstname=login_data.firstname,
+            lastname=login_data.lastname,
+            email=login_data.email,
+            hashed_password=hash_password(secrets.token_urlsafe(16)), # Random password for social login
+            profile_picture_url=login_data.profile_picture_url,
+            is_social_login=True,
+            fcm_token=login_data.fcm_token
+        )
+        if login_data.provider == 'google':
+            user.google_id = login_data.social_id
+        else:
+            user.facebook_id = login_data.social_id
+            
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    else:
+        # Update social ID if not set
+        if login_data.provider == 'google' and not user.google_id:
+            user.google_id = login_data.social_id
+        elif login_data.provider == 'facebook' and not user.facebook_id:
+            user.facebook_id = login_data.social_id
+            
+        user.is_social_login = True
+        if login_data.fcm_token:
+            user.fcm_token = login_data.fcm_token
+        db.commit()
+    
+    # Check if user is banned
+    if user.is_banned:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been banned. Please contact support."
+        )
+    
+    # Create access token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email, "user_type": "app_user"},
+        expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "firstname": user.firstname,
+            "lastname": user.lastname
+        }
+    }
+
+@app.post("/api/users/forgot-password", response_model=MessageResponse)
+def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Request a password reset token"""
+    user = db.query(AppUser).filter(AppUser.email == data.email, AppUser.is_deleted == False).first()
+    if not user:
+        # We don't want to reveal if a user exists or not for security reasons
+        return MessageResponse(message="If your email is registered, you will receive a reset token.", success=True)
+    
+    # Generate token
+    token = secrets.token_hex(3) # Short token for mobile ease, in production use longer hex
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    
+    # Save token
+    reset_record = PasswordReset(
+        email=data.email,
+        token=token,
+        expires_at=expires_at
+    )
+    db.add(reset_record)
+    db.commit()
+    
+    # Send email
+    # TODO: Integrate mail service. For now we just return it or print it.
+    from utils.email_utils import send_password_reset_email
+    send_password_reset_email(data.email, token)
+    
+    return MessageResponse(message="Password reset token sent to your email.", success=True)
+
+@app.post("/api/users/reset-password", response_model=MessageResponse)
+def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Reset password using token"""
+    reset_record = db.query(PasswordReset).filter(
+        PasswordReset.token == data.token,
+        PasswordReset.is_used == False,
+        PasswordReset.expires_at > datetime.now(timezone.utc)
+    ).first()
+    
+    if not reset_record:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+    
+    user = db.query(AppUser).filter(AppUser.email == reset_record.email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user.hashed_password = hash_password(data.new_password)
+    user.is_social_login = False # Now they have a password
+    reset_record.is_used = True
+    db.commit()
+    
+    return MessageResponse(message="Password reset successfully.", success=True)
+
+@app.post("/api/users/me/profile-picture", response_model=AppUserResponse)
+async def upload_profile_picture(
+    file: UploadFile = File(...),
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Upload or update profile picture"""
+    # Validate file type
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File must be an image")
+    
+    # Create unique filename
+    file_extension = file.filename.split(".")[-1]
+    filename = f"user_{current_user.id}_{secrets.token_hex(8)}.{file_extension}"
+    file_path = f"uploads/profile_pictures/{filename}"
+    
+    # Save file
+    with open(f"backend/{file_path}", "wb") as buffer:
+        buffer.write(await file.read())
+    
+    # Update user record
+    # In production, use the actual domain
+    current_user.profile_picture_url = f"/uploads/profile_pictures/{filename}"
+    db.commit()
+    db.refresh(current_user)
+    
+    return current_user
+
+@app.delete("/api/users/me/profile-picture", response_model=AppUserResponse)
+async def delete_profile_picture(
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Delete profile picture"""
+    current_user.profile_picture_url = None
+    db.commit()
+    db.refresh(current_user)
+    
+    return current_user
+
 @app.get("/api/users/me", response_model=AppUserResponse)
 async def get_my_profile(current_user: AppUser = Depends(get_current_app_user)):
     """Get current user's profile"""
@@ -986,6 +1181,8 @@ async def update_my_profile(
         current_user.phone_number = update_data.phone_number
     if update_data.address is not None:
         current_user.address = update_data.address
+    if update_data.profile_picture_url is not None:
+        current_user.profile_picture_url = update_data.profile_picture_url
     if update_data.fcm_token is not None:
         current_user.fcm_token = update_data.fcm_token
     
@@ -1129,6 +1326,8 @@ async def get_all_users(
             "email": user.email,
             "phone_number": user.phone_number,
             "address": user.address,
+            "profile_picture_url": user.profile_picture_url,
+            "is_social_login": user.is_social_login,
             "is_banned": user.is_banned,
             "is_deleted": user.is_deleted,
             "created_at": user.created_at,

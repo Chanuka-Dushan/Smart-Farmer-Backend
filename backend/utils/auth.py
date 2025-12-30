@@ -64,9 +64,11 @@ def decode_token(token: str) -> TokenData:
             detail="Invalid or expired token"
         )
 
+from utils.database import get_db
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = None
+    db: Session = Depends(get_db)
 ) -> AppUser:
     """Get current authenticated mobile app user"""
     token = credentials.credentials
@@ -99,7 +101,7 @@ def get_current_user(
 
 def get_current_admin(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = None
+    db: Session = Depends(get_db)
 ) -> Admin:
     """Get current authenticated admin user"""
     token = credentials.credentials

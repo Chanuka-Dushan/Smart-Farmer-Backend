@@ -13,11 +13,24 @@ class UserRegisterRequest(BaseModel):
     phone_number: Optional[str] = Field(None, max_length=20)
     address: Optional[str] = Field(None, max_length=500)
     fcm_token: Optional[str] = Field(None, max_length=500)
+    is_social_login: bool = False
+    google_id: Optional[str] = None
+    facebook_id: Optional[str] = None
 
 class UserLoginRequest(BaseModel):
     """Request model for user login"""
     email: EmailStr
     password: str
+
+class SocialLoginRequest(BaseModel):
+    """Request model for social login"""
+    email: EmailStr
+    firstname: str
+    lastname: str
+    social_id: str
+    provider: str  # 'google' or 'facebook'
+    profile_picture_url: Optional[str] = None
+    fcm_token: Optional[str] = None
 
 class UserUpdateRequest(BaseModel):
     """Request model for user profile update"""
@@ -40,6 +53,8 @@ class UserResponse(BaseModel):
     email: str
     phone_number: Optional[str]
     address: Optional[str]
+    profile_picture_url: Optional[str]
+    is_social_login: bool
     is_banned: bool
     created_at: datetime
     updated_at: datetime
@@ -105,3 +120,12 @@ class MessageResponse(BaseModel):
     """Generic message response"""
     message: str
     success: bool = True
+
+class ForgotPasswordRequest(BaseModel):
+    """Request model for forgot password"""
+    email: EmailStr
+
+class ResetPasswordRequest(BaseModel):
+    """Request model for reset password"""
+    token: str
+    new_password: str = Field(..., min_length=6)
