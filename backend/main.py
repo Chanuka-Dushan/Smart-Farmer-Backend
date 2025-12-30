@@ -7,7 +7,7 @@ from fastapi.security import HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, String, Integer, Boolean, Text, DateTime
+from sqlalchemy import create_engine, Column, String, Integer, Boolean, Text, DateTime, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from passlib.context import CryptContext
@@ -171,6 +171,12 @@ class AppUserRegister(BaseModel):
     phone_number: Optional[str] = None
     address: Optional[str] = None
     fcm_token: Optional[str] = None
+    user_type: Optional[str] = 'buyer'
+    business_name: Optional[str] = None
+    business_address: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    shop_location_name: Optional[str] = None
 
 class AppUserUpdate(BaseModel):
     firstname: Optional[str] = None
@@ -917,11 +923,18 @@ async def get_seller_notifications(
 @app.post("/api/users/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 def register_app_user(user_data: AppUserRegister, db: Session = Depends(get_db)):
     """Register a new mobile app user"""
-    # Check if email already exists
+    email_lower = user_data.email.lower()
+    
+    # Check if email already exists in AppUser or Seller
     existing_user = db.query(AppUser).filter(
-        AppUser.email == user_data.email,
+        func.lower(AppUser.email) == email_lower,
         AppUser.is_deleted == False
     ).first()
+    
+    if not existing_user:
+        existing_user = db.query(Seller).filter(
+            func.lower(Seller.email) == email_lower
+        ).first()
     
     if existing_user:
         raise HTTPException(
@@ -929,41 +942,81 @@ def register_app_user(user_data: AppUserRegister, db: Session = Depends(get_db))
             detail="Email already registered"
         )
     
-    # Create new user
+    # Register based on user type
     hashed_password = hash_password(user_data.password)
-    new_user = AppUser(
-        firstname=user_data.firstname,
-        lastname=user_data.lastname,
-        email=user_data.email,
-        hashed_password=hashed_password,
-        phone_number=user_data.phone_number,
-        address=user_data.address,
-        fcm_token=user_data.fcm_token,
-        is_deleted=False,
-        is_banned=False
-    )
+    user_type = user_data.user_type.lower() if user_data.user_type else 'buyer'
     
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    # Create access token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": new_user.email, "user_type": "app_user"},
-        expires_delta=access_token_expires
-    )
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": new_user.id,
-            "email": new_user.email,
-            "firstname": new_user.firstname,
-            "lastname": new_user.lastname
+    if user_type == 'seller':
+        # Create new seller
+        new_seller = Seller(
+            business_name=user_data.business_name or f"{user_data.firstname}'s Shop",
+            owner_firstname=user_data.firstname,
+            owner_lastname=user_data.lastname,
+            email=email_lower,
+            hashed_password=hashed_password,
+            phone_number=user_data.phone_number,
+            business_address=user_data.business_address,
+            fcm_token=user_data.fcm_token,
+            latitude=user_data.latitude,
+            longitude=user_data.longitude,
+            shop_location_name=user_data.shop_location_name
+        )
+        db.add(new_seller)
+        db.commit()
+        db.refresh(new_seller)
+        
+        # Create token for seller
+        access_token = create_access_token(
+            data={"sub": new_seller.email, "user_type": "seller"},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": new_seller.id,
+                "email": new_seller.email,
+                "firstname": new_seller.owner_firstname,
+                "lastname": new_seller.owner_lastname,
+                "user_type": "seller"
+            }
         }
-    }
+    else:
+        # Create new app user (buyer)
+        new_user = AppUser(
+            firstname=user_data.firstname,
+            lastname=user_data.lastname,
+            email=email_lower,
+            hashed_password=hashed_password,
+            phone_number=user_data.phone_number,
+            address=user_data.address,
+            fcm_token=user_data.fcm_token,
+            is_deleted=False,
+            is_banned=False
+        )
+        
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+        
+        # Create token for buyer
+        access_token = create_access_token(
+            data={"sub": new_user.email, "user_type": "app_user"},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": new_user.id,
+                "email": new_user.email,
+                "firstname": new_user.firstname,
+                "lastname": new_user.lastname,
+                "user_type": "buyer"
+            }
+        }
 
 @app.post("/api/users/login", response_model=Token)
 def login_app_user(login_data: UserLogin, db: Session = Depends(get_db)):
@@ -1008,19 +1061,31 @@ def login_app_user(login_data: UserLogin, db: Session = Depends(get_db)):
 @app.post("/api/users/social-login", response_model=Token)
 def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(get_db)):
     """Social login for mobile app users (Google/Facebook)"""
-    # Find user by email
+    email_lower = login_data.email.lower()
+    
+    # 1. Search in AppUser (Buyer)
     user = db.query(AppUser).filter(
-        AppUser.email == login_data.email,
+        func.lower(AppUser.email) == email_lower,
         AppUser.is_deleted == False
     ).first()
     
+    user_type = "app_user"
+    
+    # 2. Search in Seller if not found in AppUser
     if not user:
-        # Create new user if not exists
+        user = db.query(Seller).filter(
+            func.lower(Seller.email) == email_lower
+        ).first()
+        if user:
+            user_type = "seller"
+
+    if not user:
+        # Create new user if not exists (default to Buyer)
         user = AppUser(
             firstname=login_data.firstname,
             lastname=login_data.lastname,
-            email=login_data.email,
-            hashed_password=hash_password(secrets.token_urlsafe(16)), # Random password for social login
+            email=email_lower,
+            hashed_password=hash_password(secrets.token_urlsafe(16)), 
             profile_picture_url=login_data.profile_picture_url,
             is_social_login=True,
             fcm_token=login_data.fcm_token
@@ -1033,6 +1098,7 @@ def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(
         db.add(user)
         db.commit()
         db.refresh(user)
+        user_type = "app_user"
     else:
         # Update social ID if not set
         if login_data.provider == 'google' and not user.google_id:
@@ -1045,8 +1111,8 @@ def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(
             user.fcm_token = login_data.fcm_token
         db.commit()
     
-    # Check if user is banned
-    if user.is_banned:
+    # Check if user is banned (if it's an AppUser)
+    if hasattr(user, 'is_banned') and user.is_banned:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Your account has been banned. Please contact support."
@@ -1055,7 +1121,7 @@ def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(
     # Create access token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.email, "user_type": "app_user"},
+        data={"sub": user.email, "user_type": user_type},
         expires_delta=access_token_expires
     )
     
@@ -1065,8 +1131,9 @@ def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(
         "user": {
             "id": user.id,
             "email": user.email,
-            "firstname": user.firstname,
-            "lastname": user.lastname
+            "firstname": user.firstname if user_type == "app_user" else user.owner_firstname,
+            "lastname": user.lastname if user_type == "app_user" else user.owner_lastname,
+            "user_type": "buyer" if user_type == "app_user" else "seller"
         }
     }
 
