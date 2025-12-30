@@ -1063,10 +1063,9 @@ def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(
     """Social login for mobile app users (Google/Facebook)"""
     email_lower = login_data.email.lower()
     
-    # 1. Search in AppUser (Buyer)
+    # 1. Search in AppUser (Buyer) - We check all users (including deleted) to avoid unique constraint errors
     user = db.query(AppUser).filter(
-        func.lower(AppUser.email) == email_lower,
-        AppUser.is_deleted == False
+        func.lower(AppUser.email) == email_lower
     ).first()
     
     user_type = "app_user"
@@ -1088,7 +1087,8 @@ def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(
             hashed_password=hash_password(secrets.token_urlsafe(16)), 
             profile_picture_url=login_data.profile_picture_url,
             is_social_login=True,
-            fcm_token=login_data.fcm_token
+            fcm_token=login_data.fcm_token,
+            is_deleted=False
         )
         if login_data.provider == 'google':
             user.google_id = login_data.social_id
@@ -1100,6 +1100,10 @@ def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(
         db.refresh(user)
         user_type = "app_user"
     else:
+        # If user was soft-deleted, reactivate them
+        if hasattr(user, 'is_deleted') and user.is_deleted:
+            user.is_deleted = False
+            
         # Update social ID if not set
         if login_data.provider == 'google' and not user.google_id:
             user.google_id = login_data.social_id
