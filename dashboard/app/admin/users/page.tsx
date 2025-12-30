@@ -41,10 +41,10 @@ interface User {
   email: string
   phone_number: string | null
   address: string | null
+  user_type: 'buyer' | 'seller'
   is_banned: boolean
   is_deleted: boolean
   created_at: string
-  updated_at: string
 }
 
 interface UserStats {
@@ -367,6 +367,7 @@ function UsersManagement() {
                   <TableRow>
                     <TableHead>Name</TableHead>
                     <TableHead>Email</TableHead>
+                    <TableHead>Type</TableHead>
                     <TableHead>Phone</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Joined</TableHead>
@@ -385,6 +386,15 @@ function UsersManagement() {
                         </div>
                       </TableCell>
                       <TableCell>{user.email}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={
+                          user.user_type === 'seller' 
+                            ? "border-emerald-500 text-emerald-600 bg-emerald-50" 
+                            : "border-blue-500 text-blue-600 bg-blue-50"
+                        }>
+                          {user.user_type.toUpperCase()}
+                        </Badge>
+                      </TableCell>
                       <TableCell>{user.phone_number || '-'}</TableCell>
                       <TableCell>
                         <div className="flex gap-2">

@@ -1357,82 +1357,100 @@ async def get_all_users(
     skip: int = 0,
     limit: int = 100,
     search: Optional[str] = None,
-    include_deleted: bool = False,
-    include_banned: bool = True,
     current_admin: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get all users for dashboard view (Admin only)"""
+    """Get all users (Buyers and Sellers) for dashboard view"""
     from sqlalchemy import or_
     
-    query = db.query(AppUser)
-    
-    # Filter deleted users
-    if not include_deleted:
-        query = query.filter(AppUser.is_deleted == False)
-    
-    # Filter banned users
-    if not include_banned:
-        query = query.filter(AppUser.is_banned == False)
-    
-    # Search filter
+    # 1. Fetch AppUsers
+    app_query = db.query(AppUser)
     if search:
         search_filter = f"%{search}%"
-        query = query.filter(
+        app_query = app_query.filter(
             or_(
                 AppUser.firstname.ilike(search_filter),
                 AppUser.lastname.ilike(search_filter),
                 AppUser.email.ilike(search_filter)
             )
         )
+    app_users = app_query.all()
     
-    # Get users with pagination
-    users = query.offset(skip).limit(limit).all()
+    # 2. Fetch Sellers
+    seller_query = db.query(Seller)
+    if search:
+        search_filter = f"%{search}%"
+        seller_query = seller_query.filter(
+            or_(
+                Seller.business_name.ilike(search_filter),
+                Seller.owner_firstname.ilike(search_filter),
+                Seller.email.ilike(search_filter)
+            )
+        )
+    sellers = seller_query.all()
     
-    return [
-        {
-            "id": user.id,
-            "firstname": user.firstname,
-            "lastname": user.lastname,
-            "email": user.email,
-            "phone_number": user.phone_number,
-            "address": user.address,
-            "profile_picture_url": user.profile_picture_url,
-            "is_social_login": user.is_social_login,
-            "is_banned": user.is_banned,
-            "is_deleted": user.is_deleted,
-            "created_at": user.created_at,
-            "updated_at": user.updated_at
-        }
-        for user in users
-    ]
+    # 3. Combine and Format
+    combined = []
+    
+    for u in app_users:
+        combined.append({
+            "id": u.id,
+            "firstname": u.firstname,
+            "lastname": u.lastname,
+            "email": u.email,
+            "phone_number": u.phone_number,
+            "address": u.address,
+            "user_type": "buyer",
+            "is_banned": u.is_banned,
+            "is_deleted": u.is_deleted,
+            "created_at": u.created_at
+        })
+        
+    for s in sellers:
+        combined.append({
+            "id": s.id,
+            "firstname": s.owner_firstname,
+            "lastname": s.owner_lastname,
+            "email": s.email,
+            "phone_number": s.phone_number,
+            "address": s.business_address,
+            "user_type": "seller",
+            "is_banned": not s.is_active,
+            "is_deleted": False,
+            "created_at": s.created_at
+        })
+        
+    # Sort by created_at (descending)
+    combined.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    
+    # Apply pagination
+    return combined[skip : skip + limit]
 
 @app.get("/admin/users/stats")
 async def get_user_stats(
     current_admin: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get user statistics for dashboard (Admin only)"""
-    from sqlalchemy import func
+    """Get summarized user statistics from both Buyer and Seller tables"""
+    # AppUser (Buyers) Stats
+    total_app_users = db.query(func.count(AppUser.id)).scalar() or 0
+    active_app_users = db.query(func.count(AppUser.id)).filter(AppUser.is_deleted == False, AppUser.is_banned == False).scalar() or 0
+    banned_app_users = db.query(func.count(AppUser.id)).filter(AppUser.is_banned == True, AppUser.is_deleted == False).scalar() or 0
+    deleted_app_users = db.query(func.count(AppUser.id)).filter(AppUser.is_deleted == True).scalar() or 0
     
-    total_users = db.query(func.count(AppUser.id)).scalar()
-    active_users = db.query(func.count(AppUser.id)).filter(
-        AppUser.is_deleted == False,
-        AppUser.is_banned == False
-    ).scalar()
-    banned_users = db.query(func.count(AppUser.id)).filter(
-        AppUser.is_banned == True,
-        AppUser.is_deleted == False
-    ).scalar()
-    deleted_users = db.query(func.count(AppUser.id)).filter(
-        AppUser.is_deleted == True
-    ).scalar()
+    # Seller Stats
+    total_sellers = db.query(func.count(Seller.id)).scalar() or 0
+    # Sellers only have is_active, which we'll map to "Active" vs "Banned/Inactive"
+    active_sellers = db.query(func.count(Seller.id)).filter(Seller.is_active == True).scalar() or 0
+    inactive_sellers = db.query(func.count(Seller.id)).filter(Seller.is_active == False).scalar() or 0
     
     return {
-        "total_users": total_users or 0,
-        "active_users": active_users or 0,
-        "banned_users": banned_users or 0,
-        "deleted_users": deleted_users or 0
+        "total_users": total_app_users + total_sellers,
+        "active_users": active_app_users + active_sellers,
+        "banned_users": banned_app_users + inactive_sellers,
+        "deleted_users": deleted_app_users,
+        "buyers_count": total_app_users,
+        "sellers_count": total_sellers
     }
 
 @app.get("/admin/users/{user_id}", response_model=AppUserResponse)
