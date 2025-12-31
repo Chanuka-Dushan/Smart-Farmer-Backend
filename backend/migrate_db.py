@@ -30,10 +30,12 @@ def migrate():
 
         for col_name, col_type in app_user_columns:
             try:
+                # Use a separate transaction for each column to handle errors gracefully
                 conn.execute(text(f"ALTER TABLE app_users ADD COLUMN {col_name} {col_type}"))
                 conn.commit()
                 print(f"Successfully added column to app_users: {col_name}")
             except Exception as e:
+                conn.rollback() # CRITICAL: Reset the transaction state for Postgres
                 error_msg = str(e).lower()
                 if "already exists" in error_msg or "duplicate column" in error_msg:
                     print(f"Column {col_name} in app_users already exists, skipping.")
@@ -57,6 +59,7 @@ def migrate():
                 conn.commit()
                 print(f"Successfully added column to sellers: {col_name}")
             except Exception as e:
+                conn.rollback() # CRITICAL: Reset the transaction state for Postgres
                 error_msg = str(e).lower()
                 if "already exists" in error_msg or "duplicate column" in error_msg:
                     print(f"Column {col_name} in sellers already exists, skipping.")
@@ -85,7 +88,10 @@ def migrate():
             conn.commit()
             print("Successfully ensured password_resets table exists.")
         except Exception as e:
+            conn.rollback()
             print(f"Error creating password_resets table: {e}")
+
+    print("\nMigration process finished.")
 
     print("\nMigration process finished.")
 
