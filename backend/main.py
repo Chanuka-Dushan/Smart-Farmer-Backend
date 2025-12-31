@@ -1088,11 +1088,16 @@ def login_app_user(login_data: UserLogin, db: Session = Depends(get_db)):
 
     # 2. Try to find in Seller
     seller = db.query(Seller).filter(
-        Seller.email == login_data.email,
-        Seller.is_active == True
+        Seller.email == login_data.email
     ).first()
 
     if seller and verify_password(login_data.password, seller.hashed_password):
+        if not seller.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your seller account is inactive or banned. Please contact support."
+            )
+            
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
             data={"sub": seller.email, "user_type": "seller"},
@@ -1190,11 +1195,18 @@ def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(
             user.fcm_token = login_data.fcm_token
         db.commit()
     
-    # Check if user is banned (if it's an AppUser)
+    # Check if user is banned (Buyer)
     if hasattr(user, 'is_banned') and user.is_banned:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Your account has been banned. Please contact support."
+        )
+        
+    # Check if seller is inactive (Banned)
+    if user_type == "seller" and hasattr(user, 'is_active') and not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your seller account is inactive or banned. Please contact support."
         )
     
     # Create access token
