@@ -108,6 +108,9 @@ class Seller(Base):
     logo_url = Column(String(500), nullable=True)
     onboarding_completed = Column(Boolean, default=False)
     fcm_token = Column(String(500), nullable=True)
+    google_id = Column(String(255), nullable=True)
+    facebook_id = Column(String(255), nullable=True)
+    is_social_login = Column(Boolean, default=False)
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat(), onupdate=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -196,6 +199,7 @@ class SocialLoginRequest(BaseModel):
     provider: str
     profile_picture_url: Optional[str] = None
     fcm_token: Optional[str] = None
+    user_type: Optional[str] = 'buyer'
 
 class AppUserResponse(BaseModel):
     id: int
@@ -1136,17 +1140,32 @@ def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(
             user_type = "seller"
 
     if not user:
-        # Create new user if not exists (default to Buyer)
-        user = AppUser(
-            firstname=login_data.firstname,
-            lastname=login_data.lastname,
-            email=email_lower,
-            hashed_password=hash_password(secrets.token_urlsafe(16)), 
-            profile_picture_url=login_data.profile_picture_url,
-            is_social_login=True,
-            fcm_token=login_data.fcm_token,
-            is_deleted=False
-        )
+        # Create new user if not exists
+        if login_data.user_type == 'seller':
+            user = Seller(
+                business_name=f"{login_data.firstname}'s Store",
+                owner_firstname=login_data.firstname,
+                owner_lastname=login_data.lastname,
+                email=email_lower,
+                hashed_password=hash_password(secrets.token_urlsafe(16)), 
+                is_social_login=True,
+                fcm_token=login_data.fcm_token,
+                onboarding_completed=False
+            )
+            user_type = "seller"
+        else:
+            user = AppUser(
+                firstname=login_data.firstname,
+                lastname=login_data.lastname,
+                email=email_lower,
+                hashed_password=hash_password(secrets.token_urlsafe(16)), 
+                profile_picture_url=login_data.profile_picture_url,
+                is_social_login=True,
+                fcm_token=login_data.fcm_token,
+                is_deleted=False
+            )
+            user_type = "app_user"
+            
         if login_data.provider == 'google':
             user.google_id = login_data.social_id
         else:
@@ -1155,7 +1174,6 @@ def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(
         db.add(user)
         db.commit()
         db.refresh(user)
-        user_type = "app_user"
     else:
         # If user was soft-deleted, reactivate them
         if hasattr(user, 'is_deleted') and user.is_deleted:
