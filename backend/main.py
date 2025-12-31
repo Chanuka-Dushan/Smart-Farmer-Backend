@@ -128,6 +128,30 @@ class Notification(Base):
     sent_at = Column(String, nullable=True)
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
+class SparePartRequest(Base):
+    """User Request for a Spare Part"""
+    __tablename__ = "spare_part_requests"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False)
+    image_url = Column(String(500), nullable=True)
+    status = Column(String(50), default="pending") # pending, fulfilled
+    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+
+class SparePartResponse(Base):
+    """Seller Response/Offer for a Spare Part Request"""
+    __tablename__ = "spare_part_responses"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    request_id = Column(Integer, nullable=False)
+    seller_id = Column(Integer, nullable=False)
+    price = Column(String(50), nullable=False)
+    description = Column(Text, nullable=False)
+    status = Column(String(50), default="pending") # pending, approved (by user), rejected (by user)
+    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+
 # Create the tables automatically
 Base.metadata.create_all(bind=engine)
 
@@ -273,6 +297,38 @@ class SellerLocationUpdate(BaseModel):
     latitude: str
     longitude: str
     shop_location_name: Optional[str] = None
+
+# Spare Part Schemas
+class SparePartRequestCreate(BaseModel):
+    title: str
+    description: str
+
+class SparePartRequestResponse(BaseModel):
+    id: int
+    user_id: int
+    title: str
+    description: str
+    image_url: Optional[str]
+    status: str
+    created_at: str
+    class Config:
+        from_attributes = True
+
+class SparePartOfferCreate(BaseModel):
+    price: str
+    description: str
+
+class SparePartOfferResponse(BaseModel):
+    id: int
+    request_id: int
+    seller_id: int
+    price: str
+    description: str
+    status: str
+    created_at: str
+    seller: Optional[dict] = None
+    class Config:
+        from_attributes = True
 
 class SellerResponse(BaseModel):
     id: int
@@ -747,6 +803,172 @@ async def upload_seller_logo(
     db.refresh(current_seller)
     
     return current_seller
+
+    db.refresh(current_seller)
+    return current_seller
+
+# --- Spare Parts API ---
+@app.post("/api/spare-parts/requests", response_model=SparePartRequestResponse)
+async def create_spare_part_request(
+    request_data: SparePartRequestCreate,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """User creates a new spare part request"""
+    new_request = SparePartRequest(
+        user_id=current_user.id,
+        title=request_data.title,
+        description=request_data.description
+    )
+    db.add(new_request)
+    db.commit()
+    db.refresh(new_request)
+    return new_request
+
+@app.post("/api/spare-parts/requests/{request_id}/image", response_model=SparePartRequestResponse)
+async def upload_spare_part_image(
+    request_id: int,
+    file: UploadFile = File(...),
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Upload image for a spare part request"""
+    request = db.query(SparePartRequest).filter(
+        SparePartRequest.id == request_id,
+        SparePartRequest.user_id == current_user.id
+    ).first()
+    
+    if not request:
+        raise HTTPException(status_code=404, detail="Request not found")
+        
+    file_extension = file.filename.split(".")[-1]
+    filename = f"spare_part_{request_id}_{secrets.token_hex(8)}.{file_extension}"
+    file_path = f"uploads/spare_parts/{filename}"
+    
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "wb") as buffer:
+        buffer.write(await file.read())
+        
+    request.image_url = f"/uploads/spare_parts/{filename}"
+    db.commit()
+    db.refresh(request)
+    return request
+
+@app.get("/api/spare-parts/requests", response_model=list[SparePartRequestResponse])
+async def get_all_spare_part_requests(
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Sellers can see all active spare part requests"""
+    return db.query(SparePartRequest).filter(SparePartRequest.status == "pending").all()
+
+@app.post("/api/spare-parts/requests/{request_id}/offers", response_model=SparePartOfferResponse)
+async def create_spare_part_offer(
+    request_id: int,
+    offer_data: SparePartOfferCreate,
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Seller provides an offer for a request"""
+    request = db.query(SparePartRequest).filter(SparePartRequest.id == request_id).first()
+    if not request:
+        raise HTTPException(status_code=404, detail="Request not found")
+        
+    existing_offer = db.query(SparePartResponse).filter(
+        SparePartResponse.request_id == request_id,
+        SparePartResponse.seller_id == current_seller.id
+    ).first()
+    
+    if existing_offer:
+        existing_offer.price = offer_data.price
+        existing_offer.description = offer_data.description
+        db.commit()
+        db.refresh(existing_offer)
+        return existing_offer
+
+    new_offer = SparePartResponse(
+        request_id=request_id,
+        seller_id=current_seller.id,
+        price=offer_data.price,
+        description=offer_data.description
+    )
+    db.add(new_offer)
+    db.commit()
+    db.refresh(new_offer)
+    return new_offer
+
+@app.get("/api/spare-parts/my-requests", response_model=list[SparePartRequestResponse])
+async def get_my_spare_part_requests(
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Users see their own requests"""
+    return db.query(SparePartRequest).filter(SparePartRequest.user_id == current_user.id).all()
+
+@app.get("/api/spare-parts/requests/{request_id}/offers", response_model=list[SparePartOfferResponse])
+async def get_offers_for_request(
+    request_id: int,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """User sees all offers for their request"""
+    request = db.query(SparePartRequest).filter(
+        SparePartRequest.id == request_id,
+        SparePartRequest.user_id == current_user.id
+    ).first()
+    
+    if not request:
+        raise HTTPException(status_code=404, detail="Request not found")
+        
+    offers = db.query(SparePartResponse).filter(SparePartResponse.request_id == request_id).all()
+    
+    results = []
+    for offer in offers:
+        seller = db.query(Seller).filter(Seller.id == offer.seller_id).first()
+        offer_dict = {
+            "id": offer.id,
+            "request_id": offer.request_id,
+            "seller_id": offer.seller_id,
+            "price": offer.price,
+            "description": offer.description,
+            "status": offer.status,
+            "created_at": offer.created_at,
+            "seller": {
+                "business_name": seller.business_name if seller else "Unknown Store",
+                "latitude": seller.latitude if seller else None,
+                "longitude": seller.longitude if seller else None,
+                "business_address": seller.business_address if seller else None,
+                "logo_url": seller.logo_url if seller else None
+            }
+        }
+        results.append(offer_dict)
+            
+    return results
+
+@app.put("/api/spare-parts/offers/{offer_id}/status", response_model=SparePartOfferResponse)
+async def update_offer_status(
+    offer_id: int,
+    status_data: dict, # {"status": "approved" or "rejected"}
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """User approves or rejects a seller's offer"""
+    offer = db.query(SparePartResponse).filter(SparePartResponse.id == offer_id).first()
+    if not offer:
+        raise HTTPException(status_code=404, detail="Offer not found")
+        
+    request = db.query(SparePartRequest).filter(
+        SparePartRequest.id == offer.request_id,
+        SparePartRequest.user_id == current_user.id
+    ).first()
+    
+    if not request:
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    offer.status = status_data.get("status", "pending")
+    db.commit()
+    db.refresh(offer)
+    return offer
 
 @app.delete("/api/sellers/me/logo", response_model=SellerResponse)
 async def delete_seller_logo(
@@ -1693,7 +1915,7 @@ async def get_all_sellers(
     skip: int = 0,
     limit: int = 100,
     search: Optional[str] = None,
-    include_inactive: bool = False,
+    include_inactive: bool = True,
     current_admin: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
