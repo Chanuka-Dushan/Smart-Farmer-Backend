@@ -748,6 +748,18 @@ async def upload_seller_logo(
     
     return current_seller
 
+@app.delete("/api/sellers/me/logo", response_model=SellerResponse)
+async def delete_seller_logo(
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Delete current seller's logo"""
+    current_seller.logo_url = None
+    current_seller.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    db.refresh(current_seller)
+    return current_seller
+
 @app.put("/api/sellers/me/password", response_model=MessageResponse)
 async def update_my_seller_password(
     password_data: PasswordUpdate,
