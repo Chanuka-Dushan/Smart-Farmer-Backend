@@ -267,6 +267,12 @@ class SellerUpdate(BaseModel):
     longitude: Optional[str] = None
     shop_location_name: Optional[str] = None
     fcm_token: Optional[str] = None
+    onboarding_completed: Optional[bool] = None
+
+class SellerLocationUpdate(BaseModel):
+    latitude: str
+    longitude: str
+    shop_location_name: Optional[str] = None
 
 class SellerResponse(BaseModel):
     id: int
