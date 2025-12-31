@@ -737,7 +737,8 @@ async def upload_seller_logo(
     file_path = f"uploads/profile_pictures/{filename}"
     
     # Save file
-    with open(f"backend/{file_path}", "wb") as buffer:
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "wb") as buffer:
         buffer.write(await file.read())
     
     # Update seller record
@@ -1327,7 +1328,8 @@ async def upload_profile_picture(
     file_path = f"uploads/profile_pictures/{filename}"
     
     # Save file
-    with open(f"backend/{file_path}", "wb") as buffer:
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "wb") as buffer:
         buffer.write(await file.read())
     
     # Update user record
