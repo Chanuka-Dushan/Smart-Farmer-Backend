@@ -267,6 +267,12 @@ class SellerUpdate(BaseModel):
     longitude: Optional[str] = None
     shop_location_name: Optional[str] = None
     fcm_token: Optional[str] = None
+    onboarding_completed: Optional[bool] = None
+
+class SellerLocationUpdate(BaseModel):
+    latitude: str
+    longitude: str
+    shop_location_name: Optional[str] = None
 
 class SellerResponse(BaseModel):
     id: int
@@ -688,11 +694,34 @@ async def update_my_seller_profile(
         current_seller.fcm_token = update_data.fcm_token
     if update_data.onboarding_completed is not None:
         current_seller.onboarding_completed = update_data.onboarding_completed
+    if update_data.latitude is not None:
+        current_seller.latitude = update_data.latitude
+    if update_data.longitude is not None:
+        current_seller.longitude = update_data.longitude
+    if update_data.shop_location_name is not None:
+        current_seller.shop_location_name = update_data.shop_location_name
     
     current_seller.updated_at = datetime.now(timezone.utc).isoformat()
     db.commit()
     db.refresh(current_seller)
     
+    return current_seller
+
+@app.put("/api/sellers/me/location", response_model=SellerResponse)
+async def update_seller_location(
+    location_data: SellerLocationUpdate,
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Update current seller's shop location"""
+    current_seller.latitude = location_data.latitude
+    current_seller.longitude = location_data.longitude
+    if location_data.shop_location_name:
+        current_seller.shop_location_name = location_data.shop_location_name
+    
+    current_seller.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    db.refresh(current_seller)
     return current_seller
 
 @app.post("/api/sellers/me/logo", response_model=SellerResponse)
