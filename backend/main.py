@@ -105,6 +105,8 @@ class Seller(Base):
     shop_location_name = Column(String(255), nullable=True)
     is_verified = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
+    logo_url = Column(String(500), nullable=True)
+    onboarding_completed = Column(Boolean, default=False)
     fcm_token = Column(String(500), nullable=True)
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat(), onupdate=lambda: datetime.now(timezone.utc).isoformat())
@@ -276,6 +278,8 @@ class SellerResponse(BaseModel):
     shop_location_name: Optional[str]
     is_verified: bool
     is_active: bool
+    logo_url: Optional[str] = None
+    onboarding_completed: bool = False
     created_at: str
     updated_at: str
 
@@ -678,8 +682,33 @@ async def update_my_seller_profile(
         current_seller.business_description = update_data.business_description
     if update_data.fcm_token is not None:
         current_seller.fcm_token = update_data.fcm_token
+    if update_data.onboarding_completed is not None:
+        current_seller.onboarding_completed = update_data.onboarding_completed
     
     current_seller.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    db.refresh(current_seller)
+    
+    return current_seller
+
+@app.post("/api/sellers/me/logo", response_model=SellerResponse)
+async def upload_seller_logo(
+    file: UploadFile = File(...),
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Upload or update seller logo"""
+    # Create unique filename
+    file_extension = file.filename.split(".")[-1]
+    filename = f"seller_{current_seller.id}_{secrets.token_hex(8)}.{file_extension}"
+    file_path = f"uploads/profile_pictures/{filename}"
+    
+    # Save file
+    with open(f"backend/{file_path}", "wb") as buffer:
+        buffer.write(await file.read())
+    
+    # Update seller record
+    current_seller.logo_url = f"/uploads/profile_pictures/{filename}"
     db.commit()
     db.refresh(current_seller)
     
@@ -1020,43 +1049,71 @@ def register_app_user(user_data: AppUserRegister, db: Session = Depends(get_db))
 
 @app.post("/api/users/login", response_model=Token)
 def login_app_user(login_data: UserLogin, db: Session = Depends(get_db)):
-    """Login for mobile app users"""
-    # Find user
+    """Unified login for mobile app users and sellers"""
+    # 1. Try to find in AppUser (Buyer)
     user = db.query(AppUser).filter(
         AppUser.email == login_data.email,
         AppUser.is_deleted == False
     ).first()
     
-    if not user or not verify_password(login_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
+    if user and verify_password(login_data.password, user.hashed_password):
+        # Check if user is banned
+        if user.is_banned:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account has been banned. Please contact support."
+            )
+        
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.email, "user_type": "app_user"},
+            expires_delta=access_token_expires
         )
-    
-    # Check if user is banned
-    if user.is_banned:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your account has been banned. Please contact support."
-        )
-    
-    # Create access token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.email, "user_type": "app_user"},
-        expires_delta=access_token_expires
-    )
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "email": user.email,
-            "firstname": user.firstname,
-            "lastname": user.lastname
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "firstname": user.firstname,
+                "lastname": user.lastname,
+                "user_type": "buyer"
+            }
         }
-    }
+
+    # 2. Try to find in Seller
+    seller = db.query(Seller).filter(
+        Seller.email == login_data.email,
+        Seller.is_active == True
+    ).first()
+
+    if seller and verify_password(login_data.password, seller.hashed_password):
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": seller.email, "user_type": "seller"},
+            expires_delta=access_token_expires
+        )
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": seller.id,
+                "email": seller.email,
+                "owner_firstname": seller.owner_firstname,
+                "owner_lastname": seller.owner_lastname,
+                "business_name": seller.business_name,
+                "onboarding_completed": seller.onboarding_completed,
+                "user_type": "seller"
+            }
+        }
+    
+    # 3. If neither found or password wrong
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid email or password"
+    )
 
 @app.post("/api/users/social-login", response_model=Token)
 def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(get_db)):
@@ -1137,6 +1194,8 @@ def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(
             "email": user.email,
             "firstname": user.firstname if user_type == "app_user" else user.owner_firstname,
             "lastname": user.lastname if user_type == "app_user" else user.owner_lastname,
+            "business_name": getattr(user, 'business_name', None),
+            "onboarding_completed": getattr(user, 'onboarding_completed', False),
             "user_type": "buyer" if user_type == "app_user" else "seller"
         }
     }
