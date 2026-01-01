@@ -48,12 +48,7 @@ export default function SellersPage() {
 
   const fetchSellers = async () => {
     try {
-      const token = localStorage.getItem('authToken')
-      const response = await fetch('/api/admin/sellers', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
+      const response = await fetch('/api/admin/sellers')
       if (response.ok) {
         const data = await response.json()
         setSellers(data)
@@ -67,11 +62,9 @@ export default function SellersPage() {
 
   const toggleVerification = async (sellerId: number, currentStatus: boolean) => {
     try {
-      const token = localStorage.getItem('authToken')
       const response = await fetch(`/api/admin/sellers/${sellerId}/verify`, {
         method: 'PUT',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ is_verified: !currentStatus }),
@@ -87,11 +80,9 @@ export default function SellersPage() {
 
   const toggleActivation = async (sellerId: number, currentStatus: boolean) => {
     try {
-      const token = localStorage.getItem('authToken')
       const response = await fetch(`/api/admin/sellers/${sellerId}/activate`, {
         method: 'PUT',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ is_active: !currentStatus }),

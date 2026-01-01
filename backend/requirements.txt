@@ -16,6 +16,12 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 python-dotenv==1.0.0
 
+# Firebase
+firebase-admin==6.4.0
+
+# HTTP Client (for legacy support if needed)
+requests==2.31.0
+
 # Utilities
 aiofiles==23.2.1
 

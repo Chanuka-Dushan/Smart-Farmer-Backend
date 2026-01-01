@@ -1,13 +1,12 @@
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
-from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, String, Integer, Boolean, Text, DateTime, func
+from sqlalchemy import create_engine, Column, String, Integer, Boolean, Text, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from passlib.context import CryptContext
@@ -18,6 +17,18 @@ from sqlalchemy import Integer, Boolean, Text, DateTime
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Initialize Firebase Admin SDK early
+try:
+    from fcm_utils import initialize_firebase_admin
+    firebase_initialized = initialize_firebase_admin()
+    if firebase_initialized:
+        print("✓ Firebase Admin SDK initialized successfully")
+    else:
+        print("⚠ Firebase Admin SDK initialization failed")
+except ImportError:
+    print("⚠ Firebase Admin SDK not available")
+    firebase_initialized = False
 
 # --- JWT Configuration ---
 SECRET_KEY = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
@@ -66,25 +77,10 @@ class AppUser(Base):
     hashed_password = Column(String(255), nullable=False)
     fcm_token = Column(String(500), nullable=True)
     address = Column(String(500), nullable=True)
-    profile_picture_url = Column(String(500), nullable=True)
-    google_id = Column(String(255), nullable=True)
-    facebook_id = Column(String(255), nullable=True)
-    is_social_login = Column(Boolean, default=False)
     is_deleted = Column(Boolean, default=False)
     is_banned = Column(Boolean, default=False)
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat(), onupdate=lambda: datetime.now(timezone.utc).isoformat())
-
-class PasswordReset(Base):
-    """Password Reset Token Model"""
-    __tablename__ = "password_resets"
-    
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    email = Column(String(255), index=True, nullable=False)
-    token = Column(String(255), unique=True, index=True, nullable=False)
-    expires_at = Column(DateTime, nullable=False)
-    is_used = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class Seller(Base):
     """Seller Model"""
@@ -105,12 +101,7 @@ class Seller(Base):
     shop_location_name = Column(String(255), nullable=True)
     is_verified = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
-    logo_url = Column(String(500), nullable=True)
-    onboarding_completed = Column(Boolean, default=False)
     fcm_token = Column(String(500), nullable=True)
-    google_id = Column(String(255), nullable=True)
-    facebook_id = Column(String(255), nullable=True)
-    is_social_login = Column(Boolean, default=False)
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat(), onupdate=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -126,30 +117,6 @@ class Notification(Base):
     sent_by = Column(Integer, nullable=False)  # Admin ID who sent the notification
     is_sent = Column(Boolean, default=False)
     sent_at = Column(String, nullable=True)
-    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
-
-class SparePartRequest(Base):
-    """User Request for a Spare Part"""
-    __tablename__ = "spare_part_requests"
-    
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    user_id = Column(Integer, nullable=False)
-    title = Column(String(255), nullable=False)
-    description = Column(Text, nullable=False)
-    image_url = Column(String(500), nullable=True)
-    status = Column(String(50), default="pending") # pending, fulfilled
-    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
-
-class SparePartResponse(Base):
-    """Seller Response/Offer for a Spare Part Request"""
-    __tablename__ = "spare_part_responses"
-    
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    request_id = Column(Integer, nullable=False)
-    seller_id = Column(Integer, nullable=False)
-    price = Column(String(50), nullable=False)
-    description = Column(Text, nullable=False)
-    status = Column(String(50), default="pending") # pending, approved (by user), rejected (by user)
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
 # Create the tables automatically
@@ -200,30 +167,13 @@ class AppUserRegister(BaseModel):
     phone_number: Optional[str] = None
     address: Optional[str] = None
     fcm_token: Optional[str] = None
-    user_type: Optional[str] = 'buyer'
-    business_name: Optional[str] = None
-    business_address: Optional[str] = None
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    shop_location_name: Optional[str] = None
 
 class AppUserUpdate(BaseModel):
     firstname: Optional[str] = None
     lastname: Optional[str] = None
     phone_number: Optional[str] = None
     address: Optional[str] = None
-    profile_picture_url: Optional[str] = None
     fcm_token: Optional[str] = None
-
-class SocialLoginRequest(BaseModel):
-    email: str
-    firstname: str
-    lastname: str
-    social_id: str
-    provider: str
-    profile_picture_url: Optional[str] = None
-    fcm_token: Optional[str] = None
-    user_type: Optional[str] = 'buyer'
 
 class AppUserResponse(BaseModel):
     id: int
@@ -232,8 +182,6 @@ class AppUserResponse(BaseModel):
     email: str
     phone_number: Optional[str]
     address: Optional[str]
-    profile_picture_url: Optional[str]
-    is_social_login: bool
     is_banned: bool
     is_deleted: bool
     created_at: str
@@ -261,13 +209,6 @@ class MessageResponse(BaseModel):
     message: str
     success: bool = True
 
-class ForgotPasswordRequest(BaseModel):
-    email: str
-
-class ResetPasswordRequest(BaseModel):
-    token: str
-    new_password: str
-
 # Seller Schemas
 class SellerRegister(BaseModel):
     business_name: str
@@ -291,44 +232,6 @@ class SellerUpdate(BaseModel):
     longitude: Optional[str] = None
     shop_location_name: Optional[str] = None
     fcm_token: Optional[str] = None
-    onboarding_completed: Optional[bool] = None
-
-class SellerLocationUpdate(BaseModel):
-    latitude: str
-    longitude: str
-    shop_location_name: Optional[str] = None
-
-# Spare Part Schemas
-class SparePartRequestCreate(BaseModel):
-    title: str
-    description: str
-
-class SparePartRequestResponse(BaseModel):
-    id: int
-    user_id: int
-    title: str
-    description: str
-    image_url: Optional[str]
-    status: str
-    created_at: str
-    class Config:
-        from_attributes = True
-
-class SparePartOfferCreate(BaseModel):
-    price: str
-    description: str
-
-class SparePartOfferResponse(BaseModel):
-    id: int
-    request_id: int
-    seller_id: int
-    price: str
-    description: str
-    status: str
-    created_at: str
-    seller: Optional[dict] = None
-    class Config:
-        from_attributes = True
 
 class SellerResponse(BaseModel):
     id: int
@@ -344,8 +247,6 @@ class SellerResponse(BaseModel):
     shop_location_name: Optional[str]
     is_verified: bool
     is_active: bool
-    logo_url: Optional[str] = None
-    onboarding_completed: bool = False
     created_at: str
     updated_at: str
 
@@ -528,10 +429,6 @@ async def get_current_app_user(request: Request, db: Session = Depends(get_db)) 
 
 # --- 5. API Endpoints ---
 app = FastAPI()
-
-# Mount static files for profile pictures
-os.makedirs("uploads/profile_pictures", exist_ok=True)
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Add CORS middleware
 app.add_middleware(
@@ -748,238 +645,11 @@ async def update_my_seller_profile(
         current_seller.business_description = update_data.business_description
     if update_data.fcm_token is not None:
         current_seller.fcm_token = update_data.fcm_token
-    if update_data.onboarding_completed is not None:
-        current_seller.onboarding_completed = update_data.onboarding_completed
-    if update_data.latitude is not None:
-        current_seller.latitude = update_data.latitude
-    if update_data.longitude is not None:
-        current_seller.longitude = update_data.longitude
-    if update_data.shop_location_name is not None:
-        current_seller.shop_location_name = update_data.shop_location_name
     
     current_seller.updated_at = datetime.now(timezone.utc).isoformat()
     db.commit()
     db.refresh(current_seller)
     
-    return current_seller
-
-@app.put("/api/sellers/me/location", response_model=SellerResponse)
-async def update_seller_location(
-    location_data: SellerLocationUpdate,
-    current_seller: Seller = Depends(get_current_seller),
-    db: Session = Depends(get_db)
-):
-    """Update current seller's shop location"""
-    current_seller.latitude = location_data.latitude
-    current_seller.longitude = location_data.longitude
-    if location_data.shop_location_name:
-        current_seller.shop_location_name = location_data.shop_location_name
-    
-    current_seller.updated_at = datetime.now(timezone.utc).isoformat()
-    db.commit()
-    db.refresh(current_seller)
-    return current_seller
-
-@app.post("/api/sellers/me/logo", response_model=SellerResponse)
-async def upload_seller_logo(
-    file: UploadFile = File(...),
-    current_seller: Seller = Depends(get_current_seller),
-    db: Session = Depends(get_db)
-):
-    """Upload or update seller logo"""
-    # Create unique filename
-    file_extension = file.filename.split(".")[-1]
-    filename = f"seller_{current_seller.id}_{secrets.token_hex(8)}.{file_extension}"
-    file_path = f"uploads/profile_pictures/{filename}"
-    
-    # Save file
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
-    
-    # Update seller record
-    current_seller.logo_url = f"/uploads/profile_pictures/{filename}"
-    db.commit()
-    db.refresh(current_seller)
-    
-    return current_seller
-
-    db.refresh(current_seller)
-    return current_seller
-
-# --- Spare Parts API ---
-@app.post("/api/spare-parts/requests", response_model=SparePartRequestResponse)
-async def create_spare_part_request(
-    request_data: SparePartRequestCreate,
-    current_user: AppUser = Depends(get_current_app_user),
-    db: Session = Depends(get_db)
-):
-    """User creates a new spare part request"""
-    new_request = SparePartRequest(
-        user_id=current_user.id,
-        title=request_data.title,
-        description=request_data.description
-    )
-    db.add(new_request)
-    db.commit()
-    db.refresh(new_request)
-    return new_request
-
-@app.post("/api/spare-parts/requests/{request_id}/image", response_model=SparePartRequestResponse)
-async def upload_spare_part_image(
-    request_id: int,
-    file: UploadFile = File(...),
-    current_user: AppUser = Depends(get_current_app_user),
-    db: Session = Depends(get_db)
-):
-    """Upload image for a spare part request"""
-    request = db.query(SparePartRequest).filter(
-        SparePartRequest.id == request_id,
-        SparePartRequest.user_id == current_user.id
-    ).first()
-    
-    if not request:
-        raise HTTPException(status_code=404, detail="Request not found")
-        
-    file_extension = file.filename.split(".")[-1]
-    filename = f"spare_part_{request_id}_{secrets.token_hex(8)}.{file_extension}"
-    file_path = f"uploads/spare_parts/{filename}"
-    
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
-        
-    request.image_url = f"/uploads/spare_parts/{filename}"
-    db.commit()
-    db.refresh(request)
-    return request
-
-@app.get("/api/spare-parts/requests", response_model=list[SparePartRequestResponse])
-async def get_all_spare_part_requests(
-    current_seller: Seller = Depends(get_current_seller),
-    db: Session = Depends(get_db)
-):
-    """Sellers can see all active spare part requests"""
-    return db.query(SparePartRequest).filter(SparePartRequest.status == "pending").all()
-
-@app.post("/api/spare-parts/requests/{request_id}/offers", response_model=SparePartOfferResponse)
-async def create_spare_part_offer(
-    request_id: int,
-    offer_data: SparePartOfferCreate,
-    current_seller: Seller = Depends(get_current_seller),
-    db: Session = Depends(get_db)
-):
-    """Seller provides an offer for a request"""
-    request = db.query(SparePartRequest).filter(SparePartRequest.id == request_id).first()
-    if not request:
-        raise HTTPException(status_code=404, detail="Request not found")
-        
-    existing_offer = db.query(SparePartResponse).filter(
-        SparePartResponse.request_id == request_id,
-        SparePartResponse.seller_id == current_seller.id
-    ).first()
-    
-    if existing_offer:
-        existing_offer.price = offer_data.price
-        existing_offer.description = offer_data.description
-        db.commit()
-        db.refresh(existing_offer)
-        return existing_offer
-
-    new_offer = SparePartResponse(
-        request_id=request_id,
-        seller_id=current_seller.id,
-        price=offer_data.price,
-        description=offer_data.description
-    )
-    db.add(new_offer)
-    db.commit()
-    db.refresh(new_offer)
-    return new_offer
-
-@app.get("/api/spare-parts/my-requests", response_model=list[SparePartRequestResponse])
-async def get_my_spare_part_requests(
-    current_user: AppUser = Depends(get_current_app_user),
-    db: Session = Depends(get_db)
-):
-    """Users see their own requests"""
-    return db.query(SparePartRequest).filter(SparePartRequest.user_id == current_user.id).all()
-
-@app.get("/api/spare-parts/requests/{request_id}/offers", response_model=list[SparePartOfferResponse])
-async def get_offers_for_request(
-    request_id: int,
-    current_user: AppUser = Depends(get_current_app_user),
-    db: Session = Depends(get_db)
-):
-    """User sees all offers for their request"""
-    request = db.query(SparePartRequest).filter(
-        SparePartRequest.id == request_id,
-        SparePartRequest.user_id == current_user.id
-    ).first()
-    
-    if not request:
-        raise HTTPException(status_code=404, detail="Request not found")
-        
-    offers = db.query(SparePartResponse).filter(SparePartResponse.request_id == request_id).all()
-    
-    results = []
-    for offer in offers:
-        seller = db.query(Seller).filter(Seller.id == offer.seller_id).first()
-        offer_dict = {
-            "id": offer.id,
-            "request_id": offer.request_id,
-            "seller_id": offer.seller_id,
-            "price": offer.price,
-            "description": offer.description,
-            "status": offer.status,
-            "created_at": offer.created_at,
-            "seller": {
-                "business_name": seller.business_name if seller else "Unknown Store",
-                "latitude": seller.latitude if seller else None,
-                "longitude": seller.longitude if seller else None,
-                "business_address": seller.business_address if seller else None,
-                "logo_url": seller.logo_url if seller else None
-            }
-        }
-        results.append(offer_dict)
-            
-    return results
-
-@app.put("/api/spare-parts/offers/{offer_id}/status", response_model=SparePartOfferResponse)
-async def update_offer_status(
-    offer_id: int,
-    status_data: dict, # {"status": "approved" or "rejected"}
-    current_user: AppUser = Depends(get_current_app_user),
-    db: Session = Depends(get_db)
-):
-    """User approves or rejects a seller's offer"""
-    offer = db.query(SparePartResponse).filter(SparePartResponse.id == offer_id).first()
-    if not offer:
-        raise HTTPException(status_code=404, detail="Offer not found")
-        
-    request = db.query(SparePartRequest).filter(
-        SparePartRequest.id == offer.request_id,
-        SparePartRequest.user_id == current_user.id
-    ).first()
-    
-    if not request:
-        raise HTTPException(status_code=403, detail="Not authorized")
-        
-    offer.status = status_data.get("status", "pending")
-    db.commit()
-    db.refresh(offer)
-    return offer
-
-@app.delete("/api/sellers/me/logo", response_model=SellerResponse)
-async def delete_seller_logo(
-    current_seller: Seller = Depends(get_current_seller),
-    db: Session = Depends(get_db)
-):
-    """Delete current seller's logo"""
-    current_seller.logo_url = None
-    current_seller.updated_at = datetime.now(timezone.utc).isoformat()
-    db.commit()
-    db.refresh(current_seller)
     return current_seller
 
 @app.put("/api/sellers/me/password", response_model=MessageResponse)
@@ -1049,97 +719,220 @@ async def get_seller_locations(
 # ============= NOTIFICATION ENDPOINTS =============
 
 @app.post("/api/notifications/send", response_model=MessageResponse)
-async def send_notification(
+async def send_notification_endpoint(
     notification_data: NotificationCreate,
     current_admin: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Send notification to users (Admin only)"""
-    from fcm_utils import send_notification as fcm_send
-    
-    # Get admin ID
-    admin = db.query(User).filter(User.email == current_admin["email"]).first()
-    if not admin:
-        raise HTTPException(status_code=404, detail="Admin not found")
-    
-    # Create notification record
-    new_notification = Notification(
-        title=notification_data.title,
-        message=notification_data.message,
-        user_type=notification_data.user_type,
-        target_user_id=notification_data.target_user_id,
-        sent_by=admin.id,
-        is_sent=False
-    )
-    
-    db.add(new_notification)
-    db.commit()
-    db.refresh(new_notification)
-    
-    # Send notifications based on user type
-    success_count = 0
-    total_count = 0
-    
-    if notification_data.user_type == "all":
-        # Send to all app users and sellers
-        app_users = db.query(AppUser).filter(
-            AppUser.is_deleted == False,
-            AppUser.is_banned == False,
-            AppUser.fcm_token.isnot(None)
-        ).all()
+    """Send notification to users with enhanced error handling and validation (Admin only)"""
+    try:
+        from fcm_utils import send_notification as fcm_send, send_multicast_notification, logger
         
-        sellers = db.query(Seller).filter(
-            Seller.is_active == True,
-            Seller.fcm_token.isnot(None)
-        ).all()
+        # Validate input
+        if not notification_data.title or not notification_data.title.strip():
+            raise HTTPException(status_code=400, detail="Notification title is required")
         
-        all_users = app_users + sellers
-        total_count = len(all_users)
+        if not notification_data.message or not notification_data.message.strip():
+            raise HTTPException(status_code=400, detail="Notification message is required")
         
-        for user in all_users:
-            if hasattr(user, 'fcm_token') and user.fcm_token:
-                result = fcm_send(
-                    fcm_token=user.fcm_token,
-                    title=notification_data.title,
-                    body=notification_data.message
-                )
-                if "error" not in result:
-                    success_count += 1
+        if notification_data.user_type not in ["all", "app_user", "seller"]:
+            raise HTTPException(status_code=400, detail="Invalid user_type. Must be 'all', 'app_user', or 'seller'")
+        
+        # Get admin ID
+        admin = db.query(User).filter(User.email == current_admin["email"]).first()
+        if not admin:
+            raise HTTPException(status_code=404, detail="Admin not found")
+        
+        # Create notification record
+        new_notification = Notification(
+            title=notification_data.title.strip(),
+            message=notification_data.message.strip(),
+            user_type=notification_data.user_type,
+            target_user_id=notification_data.target_user_id,
+            sent_by=admin.id,
+            is_sent=False
+        )
+        
+        db.add(new_notification)
+        db.commit()
+        db.refresh(new_notification)
+        
+        # Send notifications based on user type
+        success_count = 0
+        total_count = 0
+        error_details = []
+        
+        try:
+            if notification_data.user_type == "all":
+                # Send to all app users and sellers
+                app_users = db.query(AppUser).filter(
+                    AppUser.is_deleted == False,
+                    AppUser.is_banned == False,
+                    AppUser.fcm_token.isnot(None),
+                    AppUser.fcm_token != ''
+                ).all()
+                
+                sellers = db.query(Seller).filter(
+                    Seller.is_active == True,
+                    Seller.fcm_token.isnot(None),
+                    Seller.fcm_token != ''
+                ).all()
+                
+                all_tokens = []
+                if app_users:
+                    all_tokens.extend([user.fcm_token for user in app_users])
+                if sellers:
+                    all_tokens.extend([seller.fcm_token for seller in sellers])
+                
+                total_count = len(all_tokens)
+                
+                if all_tokens:
+                    multicast_success, multicast_result = send_multicast_notification(
+                        fcm_tokens=all_tokens,
+                        title=notification_data.title,
+                        body=notification_data.message,
+                        data={'type': 'admin_broadcast', 'notification_id': str(new_notification.id)}
+                    )
                     
-    elif notification_data.user_type == "app_user":
-        if notification_data.target_user_id:
-            # Send to specific app user
-            user = db.query(AppUser).filter(
-                AppUser.id == notification_data.target_user_id,
-                AppUser.is_deleted == False,
-                AppUser.is_banned == False,
-                AppUser.fcm_token.isnot(None)
-            ).first()
+                    if multicast_success:
+                        success_count = multicast_result.get('total_success', 0)
+                    else:
+                        error_details.append(f"Multicast error: {multicast_result.get('error', 'Unknown error')}")
+                        
+            elif notification_data.user_type == "app_user":
+                if notification_data.target_user_id:
+                    # Send to specific app user
+                    user = db.query(AppUser).filter(
+                        AppUser.id == notification_data.target_user_id,
+                        AppUser.is_deleted == False,
+                        AppUser.is_banned == False,
+                        AppUser.fcm_token.isnot(None),
+                        AppUser.fcm_token != ''
+                    ).first()
+                    
+                    if user and user.fcm_token:
+                        total_count = 1
+                        send_success, send_result = fcm_send(
+                            fcm_token=user.fcm_token,
+                            title=notification_data.title,
+                            body=notification_data.message,
+                            data={'type': 'admin_notification', 'notification_id': str(new_notification.id)}
+                        )
+                        
+                        if send_success:
+                            success_count = 1
+                        else:
+                            error_details.append(f"FCM error: {send_result.get('error', 'Unknown error')}")
+                    else:
+                        raise HTTPException(status_code=404, detail="User not found or no valid FCM token")
+                else:
+                    # Send to all app users
+                    app_users = db.query(AppUser).filter(
+                        AppUser.is_deleted == False,
+                        AppUser.is_banned == False,
+                        AppUser.fcm_token.isnot(None),
+                        AppUser.fcm_token != ''
+                    ).all()
+                    
+                    if app_users:
+                        user_tokens = [user.fcm_token for user in app_users]
+                        total_count = len(user_tokens)
+                        
+                        multicast_success, multicast_result = send_multicast_notification(
+                            fcm_tokens=user_tokens,
+                            title=notification_data.title,
+                            body=notification_data.message,
+                            data={'type': 'admin_broadcast', 'notification_id': str(new_notification.id)}
+                        )
+                        
+                        if multicast_success:
+                            success_count = multicast_result.get('total_success', 0)
+                        else:
+                            error_details.append(f"Multicast error: {multicast_result.get('error', 'Unknown error')}")
+                            
+            elif notification_data.user_type == "seller":
+                if notification_data.target_user_id:
+                    # Send to specific seller
+                    seller = db.query(Seller).filter(
+                        Seller.id == notification_data.target_user_id,
+                        Seller.is_active == True,
+                        Seller.fcm_token.isnot(None),
+                        Seller.fcm_token != ''
+                    ).first()
+                    
+                    if seller and seller.fcm_token:
+                        total_count = 1
+                        send_success, send_result = fcm_send(
+                            fcm_token=seller.fcm_token,
+                            title=notification_data.title,
+                            body=notification_data.message,
+                            data={'type': 'admin_notification', 'notification_id': str(new_notification.id)}
+                        )
+                        
+                        if send_success:
+                            success_count = 1
+                        else:
+                            error_details.append(f"FCM error: {send_result.get('error', 'Unknown error')}")
+                    else:
+                        raise HTTPException(status_code=404, detail="Seller not found or no valid FCM token")
+                else:
+                    # Send to all sellers
+                    sellers = db.query(Seller).filter(
+                        Seller.is_active == True,
+                        Seller.fcm_token.isnot(None),
+                        Seller.fcm_token != ''
+                    ).all()
+                    
+                    if sellers:
+                        seller_tokens = [seller.fcm_token for seller in sellers]
+                        total_count = len(seller_tokens)
+                        
+                        multicast_success, multicast_result = send_multicast_notification(
+                            fcm_tokens=seller_tokens,
+                            title=notification_data.title,
+                            body=notification_data.message,
+                            data={'type': 'admin_broadcast', 'notification_id': str(new_notification.id)}
+                        )
+                        
+                        if multicast_success:
+                            success_count = multicast_result.get('total_success', 0)
+                        else:
+                            error_details.append(f"Multicast error: {multicast_result.get('error', 'Unknown error')}")
             
-            if user:
-                total_count = 1
-                result = fcm_send(
-                    fcm_token=user.fcm_token,
-                    title=notification_data.title,
-                    body=notification_data.message
-                )
-                if "error" not in result:
-                    success_count = 1
-        else:
-            # Send to all app users
-            app_users = db.query(AppUser).filter(
-                AppUser.is_deleted == False,
-                AppUser.is_banned == False,
-                AppUser.fcm_token.isnot(None)
-            ).all()
+            # Update notification record
+            if success_count > 0:
+                new_notification.is_sent = True
+                new_notification.sent_at = datetime.now(timezone.utc).isoformat()
+                db.commit()
+                
+                success_message = f"Notification sent successfully to {success_count}/{total_count} recipients"
+                logger.info(success_message)
+                
+                if error_details:
+                    success_message += f". Some errors occurred: {'; '.join(error_details)}"
+                
+                return MessageResponse(message=success_message, success=True)
+            else:
+                error_message = f"Failed to send notification to any recipients"
+                if error_details:
+                    error_message += f": {'; '.join(error_details)}"
+                    
+                logger.error(error_message)
+                raise HTTPException(status_code=500, detail=error_message)
+                
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except Exception as e:
+            logger.error(f"Notification sending error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to send notification: {str(e)}")
             
-            total_count = len(app_users)
-            for user in app_users:
-                result = fcm_send(
-                    fcm_token=user.fcm_token,
-                    title=notification_data.title,
-                    body=notification_data.message
-                )
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Notification endpoint error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error occurred while processing notification")
                 if "error" not in result:
                     success_count += 1
                     
@@ -1220,18 +1013,11 @@ async def get_seller_notifications(
 @app.post("/api/users/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 def register_app_user(user_data: AppUserRegister, db: Session = Depends(get_db)):
     """Register a new mobile app user"""
-    email_lower = user_data.email.lower()
-    
-    # Check if email already exists in AppUser or Seller
+    # Check if email already exists
     existing_user = db.query(AppUser).filter(
-        func.lower(AppUser.email) == email_lower,
+        AppUser.email == user_data.email,
         AppUser.is_deleted == False
     ).first()
-    
-    if not existing_user:
-        existing_user = db.query(Seller).filter(
-            func.lower(Seller.email) == email_lower
-        ).first()
     
     if existing_user:
         raise HTTPException(
@@ -1239,244 +1025,68 @@ def register_app_user(user_data: AppUserRegister, db: Session = Depends(get_db))
             detail="Email already registered"
         )
     
-    # Register based on user type
+    # Create new user
     hashed_password = hash_password(user_data.password)
-    user_type = user_data.user_type.lower() if user_data.user_type else 'buyer'
+    new_user = AppUser(
+        firstname=user_data.firstname,
+        lastname=user_data.lastname,
+        email=user_data.email,
+        hashed_password=hashed_password,
+        phone_number=user_data.phone_number,
+        address=user_data.address,
+        fcm_token=user_data.fcm_token,
+        is_deleted=False,
+        is_banned=False
+    )
     
-    if user_type == 'seller':
-        # Create new seller
-        new_seller = Seller(
-            business_name=user_data.business_name or f"{user_data.firstname}'s Shop",
-            owner_firstname=user_data.firstname,
-            owner_lastname=user_data.lastname,
-            email=email_lower,
-            hashed_password=hashed_password,
-            phone_number=user_data.phone_number,
-            business_address=user_data.business_address,
-            fcm_token=user_data.fcm_token,
-            latitude=user_data.latitude,
-            longitude=user_data.longitude,
-            shop_location_name=user_data.shop_location_name
-        )
-        db.add(new_seller)
-        db.commit()
-        db.refresh(new_seller)
-        
-        # Create token for seller
-        access_token = create_access_token(
-            data={"sub": new_seller.email, "user_type": "seller"},
-            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        )
-        
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "user": {
-                "id": new_seller.id,
-                "email": new_seller.email,
-                "firstname": new_seller.owner_firstname,
-                "lastname": new_seller.owner_lastname,
-                "user_type": "seller"
-            }
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    # Create access token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": new_user.email, "user_type": "app_user"},
+        expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": new_user.id,
+            "email": new_user.email,
+            "firstname": new_user.firstname,
+            "lastname": new_user.lastname
         }
-    else:
-        # Create new app user (buyer)
-        new_user = AppUser(
-            firstname=user_data.firstname,
-            lastname=user_data.lastname,
-            email=email_lower,
-            hashed_password=hashed_password,
-            phone_number=user_data.phone_number,
-            address=user_data.address,
-            fcm_token=user_data.fcm_token,
-            is_deleted=False,
-            is_banned=False
-        )
-        
-        db.add(new_user)
-        db.commit()
-        db.refresh(new_user)
-        
-        # Create token for buyer
-        access_token = create_access_token(
-            data={"sub": new_user.email, "user_type": "app_user"},
-            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        )
-        
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "user": {
-                "id": new_user.id,
-                "email": new_user.email,
-                "firstname": new_user.firstname,
-                "lastname": new_user.lastname,
-                "user_type": "buyer"
-            }
-        }
+    }
 
 @app.post("/api/users/login", response_model=Token)
 def login_app_user(login_data: UserLogin, db: Session = Depends(get_db)):
-    """Unified login for mobile app users and sellers"""
-    # 1. Try to find in AppUser (Buyer)
+    """Login for mobile app users"""
+    # Find user
     user = db.query(AppUser).filter(
         AppUser.email == login_data.email,
         AppUser.is_deleted == False
     ).first()
     
-    if user and verify_password(login_data.password, user.hashed_password):
-        # Check if user is banned
-        if user.is_banned:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Your account has been banned. Please contact support."
-            )
-        
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        access_token = create_access_token(
-            data={"sub": user.email, "user_type": "app_user"},
-            expires_delta=access_token_expires
+    if not user or not verify_password(login_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
         )
-        
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "user": {
-                "id": user.id,
-                "email": user.email,
-                "firstname": user.firstname,
-                "lastname": user.lastname,
-                "user_type": "buyer"
-            }
-        }
-
-    # 2. Try to find in Seller
-    seller = db.query(Seller).filter(
-        Seller.email == login_data.email
-    ).first()
-
-    if seller and verify_password(login_data.password, seller.hashed_password):
-        if not seller.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Your seller account is inactive or banned. Please contact support."
-            )
-            
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        access_token = create_access_token(
-            data={"sub": seller.email, "user_type": "seller"},
-            expires_delta=access_token_expires
-        )
-        
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "user": {
-                "id": seller.id,
-                "email": seller.email,
-                "owner_firstname": seller.owner_firstname,
-                "owner_lastname": seller.owner_lastname,
-                "business_name": seller.business_name,
-                "onboarding_completed": seller.onboarding_completed,
-                "user_type": "seller"
-            }
-        }
     
-    # 3. If neither found or password wrong
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid email or password"
-    )
-
-@app.post("/api/users/social-login", response_model=Token)
-def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(get_db)):
-    """Social login for mobile app users (Google/Facebook)"""
-    email_lower = login_data.email.lower()
-    
-    # 1. Search in AppUser (Buyer) - We check all users (including deleted) to avoid unique constraint errors
-    user = db.query(AppUser).filter(
-        func.lower(AppUser.email) == email_lower
-    ).first()
-    
-    user_type = "app_user"
-    
-    # 2. Search in Seller if not found in AppUser
-    if not user:
-        user = db.query(Seller).filter(
-            func.lower(Seller.email) == email_lower
-        ).first()
-        if user:
-            user_type = "seller"
-
-    if not user:
-        # Create new user if not exists
-        if login_data.user_type == 'seller':
-            user = Seller(
-                business_name=f"{login_data.firstname}'s Store",
-                owner_firstname=login_data.firstname,
-                owner_lastname=login_data.lastname,
-                email=email_lower,
-                hashed_password=hash_password(secrets.token_urlsafe(16)), 
-                is_social_login=True,
-                fcm_token=login_data.fcm_token,
-                onboarding_completed=False
-            )
-            user_type = "seller"
-        else:
-            user = AppUser(
-                firstname=login_data.firstname,
-                lastname=login_data.lastname,
-                email=email_lower,
-                hashed_password=hash_password(secrets.token_urlsafe(16)), 
-                profile_picture_url=login_data.profile_picture_url,
-                is_social_login=True,
-                fcm_token=login_data.fcm_token,
-                is_deleted=False
-            )
-            user_type = "app_user"
-            
-        if login_data.provider == 'google':
-            user.google_id = login_data.social_id
-        else:
-            user.facebook_id = login_data.social_id
-            
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-    else:
-        # If user was soft-deleted, reactivate them
-        if hasattr(user, 'is_deleted') and user.is_deleted:
-            user.is_deleted = False
-            
-        # Update social ID if not set
-        if login_data.provider == 'google' and not user.google_id:
-            user.google_id = login_data.social_id
-        elif login_data.provider == 'facebook' and not user.facebook_id:
-            user.facebook_id = login_data.social_id
-            
-        user.is_social_login = True
-        if login_data.fcm_token:
-            user.fcm_token = login_data.fcm_token
-        db.commit()
-    
-    # Check if user is banned (Buyer)
-    if hasattr(user, 'is_banned') and user.is_banned:
+    # Check if user is banned
+    if user.is_banned:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Your account has been banned. Please contact support."
-        )
-        
-    # Check if seller is inactive (Banned)
-    if user_type == "seller" and hasattr(user, 'is_active') and not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your seller account is inactive or banned. Please contact support."
         )
     
     # Create access token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.email, "user_type": user_type},
+        data={"sub": user.email, "user_type": "app_user"},
         expires_delta=access_token_expires
     )
     
@@ -1486,105 +1096,10 @@ def social_login_app_user(login_data: SocialLoginRequest, db: Session = Depends(
         "user": {
             "id": user.id,
             "email": user.email,
-            "firstname": user.firstname if user_type == "app_user" else user.owner_firstname,
-            "lastname": user.lastname if user_type == "app_user" else user.owner_lastname,
-            "business_name": getattr(user, 'business_name', None),
-            "onboarding_completed": getattr(user, 'onboarding_completed', False),
-            "user_type": "buyer" if user_type == "app_user" else "seller"
+            "firstname": user.firstname,
+            "lastname": user.lastname
         }
     }
-
-@app.post("/api/users/forgot-password", response_model=MessageResponse)
-def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    """Request a password reset token"""
-    user = db.query(AppUser).filter(AppUser.email == data.email, AppUser.is_deleted == False).first()
-    if not user:
-        # We don't want to reveal if a user exists or not for security reasons
-        return MessageResponse(message="If your email is registered, you will receive a reset token.", success=True)
-    
-    # Generate token
-    token = secrets.token_hex(3) # Short token for mobile ease, in production use longer hex
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
-    
-    # Save token
-    reset_record = PasswordReset(
-        email=data.email,
-        token=token,
-        expires_at=expires_at
-    )
-    db.add(reset_record)
-    db.commit()
-    
-    # Send email
-    # TODO: Integrate mail service. For now we just return it or print it.
-    from utils.email_utils import send_password_reset_email
-    send_password_reset_email(data.email, token)
-    
-    return MessageResponse(message="Password reset token sent to your email.", success=True)
-
-@app.post("/api/users/reset-password", response_model=MessageResponse)
-def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
-    """Reset password using token"""
-    reset_record = db.query(PasswordReset).filter(
-        PasswordReset.token == data.token,
-        PasswordReset.is_used == False,
-        PasswordReset.expires_at > datetime.now(timezone.utc)
-    ).first()
-    
-    if not reset_record:
-        raise HTTPException(status_code=400, detail="Invalid or expired token")
-    
-    user = db.query(AppUser).filter(AppUser.email == reset_record.email).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    user.hashed_password = hash_password(data.new_password)
-    user.is_social_login = False # Now they have a password
-    reset_record.is_used = True
-    db.commit()
-    
-    return MessageResponse(message="Password reset successfully.", success=True)
-
-@app.post("/api/users/me/profile-picture", response_model=AppUserResponse)
-async def upload_profile_picture(
-    file: UploadFile = File(...),
-    current_user: AppUser = Depends(get_current_app_user),
-    db: Session = Depends(get_db)
-):
-    """Upload or update profile picture"""
-    # Validate file type
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="File must be an image")
-    
-    # Create unique filename
-    file_extension = file.filename.split(".")[-1]
-    filename = f"user_{current_user.id}_{secrets.token_hex(8)}.{file_extension}"
-    file_path = f"uploads/profile_pictures/{filename}"
-    
-    # Save file
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
-    
-    # Update user record
-    # In production, use the actual domain
-    current_user.profile_picture_url = f"/uploads/profile_pictures/{filename}"
-    db.commit()
-    db.refresh(current_user)
-    
-    return current_user
-
-@app.delete("/api/users/me/profile-picture", response_model=AppUserResponse)
-async def delete_profile_picture(
-    current_user: AppUser = Depends(get_current_app_user),
-    db: Session = Depends(get_db)
-):
-    """Delete profile picture"""
-    current_user.profile_picture_url = None
-    db.commit()
-    db.refresh(current_user)
-    
-    return current_user
 
 @app.get("/api/users/me", response_model=AppUserResponse)
 async def get_my_profile(current_user: AppUser = Depends(get_current_app_user)):
@@ -1606,8 +1121,6 @@ async def update_my_profile(
         current_user.phone_number = update_data.phone_number
     if update_data.address is not None:
         current_user.address = update_data.address
-    if update_data.profile_picture_url is not None:
-        current_user.profile_picture_url = update_data.profile_picture_url
     if update_data.fcm_token is not None:
         current_user.fcm_token = update_data.fcm_token
     
@@ -1711,100 +1224,80 @@ async def get_all_users(
     skip: int = 0,
     limit: int = 100,
     search: Optional[str] = None,
+    include_deleted: bool = False,
+    include_banned: bool = True,
     current_admin: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get all users (Buyers and Sellers) for dashboard view"""
+    """Get all users for dashboard view (Admin only)"""
     from sqlalchemy import or_
     
-    # 1. Fetch AppUsers
-    app_query = db.query(AppUser)
+    query = db.query(AppUser)
+    
+    # Filter deleted users
+    if not include_deleted:
+        query = query.filter(AppUser.is_deleted == False)
+    
+    # Filter banned users
+    if not include_banned:
+        query = query.filter(AppUser.is_banned == False)
+    
+    # Search filter
     if search:
         search_filter = f"%{search}%"
-        app_query = app_query.filter(
+        query = query.filter(
             or_(
                 AppUser.firstname.ilike(search_filter),
                 AppUser.lastname.ilike(search_filter),
                 AppUser.email.ilike(search_filter)
             )
         )
-    app_users = app_query.all()
     
-    # 2. Fetch Sellers
-    seller_query = db.query(Seller)
-    if search:
-        search_filter = f"%{search}%"
-        seller_query = seller_query.filter(
-            or_(
-                Seller.business_name.ilike(search_filter),
-                Seller.owner_firstname.ilike(search_filter),
-                Seller.email.ilike(search_filter)
-            )
-        )
-    sellers = seller_query.all()
+    # Get users with pagination
+    users = query.offset(skip).limit(limit).all()
     
-    # 3. Combine and Format
-    combined = []
-    
-    for u in app_users:
-        combined.append({
-            "id": u.id,
-            "firstname": u.firstname,
-            "lastname": u.lastname,
-            "email": u.email,
-            "phone_number": u.phone_number,
-            "address": u.address,
-            "user_type": "buyer",
-            "is_banned": u.is_banned,
-            "is_deleted": u.is_deleted,
-            "created_at": u.created_at
-        })
-        
-    for s in sellers:
-        combined.append({
-            "id": s.id,
-            "firstname": s.owner_firstname,
-            "lastname": s.owner_lastname,
-            "email": s.email,
-            "phone_number": s.phone_number,
-            "address": s.business_address,
-            "user_type": "seller",
-            "is_banned": not s.is_active,
-            "is_deleted": False,
-            "created_at": s.created_at
-        })
-        
-    # Sort by created_at (descending)
-    combined.sort(key=lambda x: x.get("created_at") or "", reverse=True)
-    
-    # Apply pagination
-    return combined[skip : skip + limit]
+    return [
+        {
+            "id": user.id,
+            "firstname": user.firstname,
+            "lastname": user.lastname,
+            "email": user.email,
+            "phone_number": user.phone_number,
+            "address": user.address,
+            "is_banned": user.is_banned,
+            "is_deleted": user.is_deleted,
+            "created_at": user.created_at,
+            "updated_at": user.updated_at
+        }
+        for user in users
+    ]
 
 @app.get("/admin/users/stats")
 async def get_user_stats(
     current_admin: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get summarized user statistics from both Buyer and Seller tables"""
-    # AppUser (Buyers) Stats
-    total_app_users = db.query(func.count(AppUser.id)).scalar() or 0
-    active_app_users = db.query(func.count(AppUser.id)).filter(AppUser.is_deleted == False, AppUser.is_banned == False).scalar() or 0
-    banned_app_users = db.query(func.count(AppUser.id)).filter(AppUser.is_banned == True, AppUser.is_deleted == False).scalar() or 0
-    deleted_app_users = db.query(func.count(AppUser.id)).filter(AppUser.is_deleted == True).scalar() or 0
+    """Get user statistics for dashboard (Admin only)"""
+    from sqlalchemy import func
     
-    # Seller Stats
-    total_sellers = db.query(func.count(Seller.id)).scalar() or 0
-    # Sellers only have is_active, which we'll map to "Active" vs "Banned/Inactive"
-    active_sellers = db.query(func.count(Seller.id)).filter(Seller.is_active == True).scalar() or 0
-    inactive_sellers = db.query(func.count(Seller.id)).filter(Seller.is_active == False).scalar() or 0
+    total_users = db.query(func.count(AppUser.id)).scalar()
+    active_users = db.query(func.count(AppUser.id)).filter(
+        AppUser.is_deleted == False,
+        AppUser.is_banned == False
+    ).scalar()
+    banned_users = db.query(func.count(AppUser.id)).filter(
+        AppUser.is_banned == True,
+        AppUser.is_deleted == False
+    ).scalar()
+    deleted_users = db.query(func.count(AppUser.id)).filter(
+        AppUser.is_deleted == True
+    ).scalar()
     
     return {
-        "total_users": total_app_users + total_sellers,
-        "active_users": active_app_users + active_sellers,
-        "banned_users": banned_app_users + inactive_sellers,
-        "deleted_users": deleted_app_users,
-        "buyers_count": total_app_users,
-        "sellers_count": total_sellers
+        "total_users": total_users or 0,
+        "active_users": active_users or 0,
+        "banned_users": banned_users or 0,
+        "deleted_users": deleted_users or 0
     }
 
 @app.get("/admin/users/{user_id}", response_model=AppUserResponse)
@@ -1915,7 +1408,7 @@ async def get_all_sellers(
     skip: int = 0,
     limit: int = 100,
     search: Optional[str] = None,
-    include_inactive: bool = True,
+    include_inactive: bool = False,
     current_admin: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
