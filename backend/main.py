@@ -718,6 +718,33 @@ async def get_seller_locations(
 
 # ============= NOTIFICATION ENDPOINTS =============
 
+@app.get("/api/notifications/status")
+async def check_notification_status():
+    """Check Firebase Admin SDK initialization status"""
+    try:
+        from fcm_utils import initialize_firebase_admin, FIREBASE_ADMIN_AVAILABLE
+        
+        if not FIREBASE_ADMIN_AVAILABLE:
+            return {
+                "firebase_available": False,
+                "error": "Firebase Admin SDK not installed. Run: pip install firebase-admin"
+            }
+        
+        firebase_initialized = initialize_firebase_admin()
+        
+        return {
+            "firebase_available": FIREBASE_ADMIN_AVAILABLE,
+            "firebase_initialized": firebase_initialized,
+            "status": "ready" if firebase_initialized else "configuration_needed"
+        }
+    except Exception as e:
+        return {
+            "firebase_available": False,
+            "firebase_initialized": False,
+            "error": str(e),
+            "status": "error"
+        }
+
 @app.post("/api/notifications/send", response_model=MessageResponse)
 async def send_notification_endpoint(
     notification_data: NotificationCreate,
@@ -726,7 +753,14 @@ async def send_notification_endpoint(
 ):
     """Send notification to users with enhanced error handling and validation (Admin only)"""
     try:
-        from fcm_utils import send_notification as fcm_send, send_multicast_notification, logger
+        from fcm_utils import send_notification as fcm_send, send_multicast_notification, logger, validate_fcm_config
+        
+        # Check Firebase configuration first
+        if not validate_fcm_config():
+            raise HTTPException(
+                status_code=500, 
+                detail="Firebase is not properly configured. Please check your Firebase Admin SDK credentials."
+            )
         
         # Validate input
         if not notification_data.title or not notification_data.title.strip():

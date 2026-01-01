@@ -115,14 +115,19 @@ class FCMError(Exception):
 def validate_fcm_config() -> bool:
     """Validate FCM configuration"""
     if not FIREBASE_ADMIN_AVAILABLE:
-        logger.error("Firebase Admin SDK not available")
+        logger.error("Firebase Admin SDK not available. Please install: pip install firebase-admin")
         return False
         
     if not FIREBASE_PROJECT_ID:
-        logger.error("Firebase Project ID not configured")
+        logger.error("Firebase Project ID not configured. Please set FIREBASE_PROJECT_ID in environment")
         return False
     
-    return initialize_firebase_admin()
+    initialized = initialize_firebase_admin()
+    if not initialized:
+        logger.error("Firebase Admin SDK initialization failed. Check your credentials.")
+        return False
+        
+    return True
 
 
 def send_notification(
