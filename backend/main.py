@@ -933,53 +933,32 @@ async def send_notification_endpoint(
     except Exception as e:
         logger.error(f"Notification endpoint error: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error occurred while processing notification")
-                if "error" not in result:
-                    success_count += 1
-                    
-    elif notification_data.user_type == "seller":
-        if notification_data.target_user_id:
-            # Send to specific seller
-            seller = db.query(Seller).filter(
-                Seller.id == notification_data.target_user_id,
-                Seller.is_active == True,
-                Seller.fcm_token.isnot(None)
-            ).first()
-            
-            if seller:
-                total_count = 1
-                result = fcm_send(
-                    fcm_token=seller.fcm_token,
-                    title=notification_data.title,
-                    body=notification_data.message
-                )
-                if "error" not in result:
-                    success_count = 1
-        else:
-            # Send to all sellers
-            sellers = db.query(Seller).filter(
-                Seller.is_active == True,
-                Seller.fcm_token.isnot(None)
-            ).all()
-            
-            total_count = len(sellers)
-            for seller in sellers:
-                result = fcm_send(
-                    fcm_token=seller.fcm_token,
-                    title=notification_data.title,
-                    body=notification_data.message
-                )
-                if "error" not in result:
-                    success_count += 1
-    
-    # Update notification status
-    new_notification.is_sent = True
-    new_notification.sent_at = datetime.now(timezone.utc).isoformat()
-    db.commit()
-    
-    return MessageResponse(
-        message=f"Notification sent to {success_count} out of {total_count} users",
-        success=True
-    )
+
+
+# ============= SELLER MANAGEMENT ENDPOINTS =============
+
+@app.get("/api/admin/sellers", dependencies=[Depends(get_current_user)])
+async def get_all_sellers(db: Session = Depends(get_db)):
+    """Get all sellers (Admin only)"""
+    try:
+        sellers = db.query(Seller).all()
+        return [
+            {
+                "id": seller.id,
+                "business_name": seller.business_name,
+                "email": seller.email,
+                "business_address": seller.business_address,
+                "phone_number": seller.phone_number,
+                "business_description": seller.business_description,
+                "is_active": seller.is_active,
+                "created_at": seller.created_at,
+            }
+            for seller in sellers
+        ]
+    except Exception as e:
+        logger.error(f"Error fetching sellers: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch sellers")
+
 
 @app.get("/api/notifications", response_model=list[NotificationResponse])
 async def get_notifications(
