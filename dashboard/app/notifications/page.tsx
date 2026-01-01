@@ -360,26 +360,6 @@ export default function NotificationsPage() {
                   )}
                 </Button>
               </DialogFooter>
-                      value={formData.target_user_id}
-                      onChange={(e) => setFormData({ ...formData, target_user_id: e.target.value })}
-                      className="col-span-3"
-                      placeholder="Specific user ID (optional)"
-                    />
-                  </div>
-                )}
-              </div>
-              <DialogFooter>
-                <Button type="submit" onClick={handleSendNotification} disabled={sending}>
-                  {sending ? (
-                    <>Sending...</>
-                  ) : (
-                    <>
-                      <Send className="h-4 w-4 mr-2" />
-                      Send Notification
-                    </>
-                  )}
-                </Button>
-              </DialogFooter>
             </DialogContent>
           </Dialog>
         </div>
