@@ -1781,7 +1781,7 @@ async def get_spare_part_requests(
     
     return result
 
-@app.get("/api/spare-parts/my-requests", response_model=list[SparePartRequestResponse])
+@app.get("/api/spare-parts/my-requests")
 async def get_my_spare_part_requests(
     current_user: AppUser = Depends(get_current_app_user),
     db: Session = Depends(get_db)
@@ -1797,15 +1797,15 @@ async def get_my_spare_part_requests(
             "user_id": req.user_id,
             "title": req.title,
             "description": req.description,
-            "image_url": req.image_url,
+            "image_url": req.image_url if req.image_url else None,
             "status": req.status,
             "created_at": req.created_at.isoformat() if req.created_at else None,
             "user": {
                 "id": current_user.id,
                 "full_name": f"{current_user.firstname} {current_user.lastname}",
                 "email": current_user.email,
-                "phone": current_user.phone_number,
-                "profile_picture_url": current_user.profile_picture_url
+                "phone": current_user.phone_number if current_user.phone_number else None,
+                "profile_picture_url": current_user.profile_picture_url if current_user.profile_picture_url else None
             }
         }
         result.append(req_dict)
