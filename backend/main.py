@@ -1406,12 +1406,7 @@ def social_login(social_data: SocialLoginRequest, db: Session = Depends(get_db))
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "email": user.email,
-            "firstname": user.firstname,
-            "lastname": user.lastname
-        }
+        "user": AppUserResponse.from_orm(user).dict()
     }
 
 @app.post("/api/auth/logout", response_model=MessageResponse)
