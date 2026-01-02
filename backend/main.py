@@ -7,7 +7,7 @@ from fastapi.security import HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, String, Integer, Boolean, Text, DateTime
+from sqlalchemy import create_engine, Column, String, Integer, Boolean, Text, DateTime, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from passlib.context import CryptContext
