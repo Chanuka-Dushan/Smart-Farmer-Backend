@@ -597,6 +597,30 @@ Path("uploads").mkdir(exist_ok=True)
 # Mount static files for uploaded images
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
+# Temporary admin endpoint to fix image paths
+@app.post("/api/admin/fix-image-paths")
+async def fix_image_paths_endpoint(db: Session = Depends(get_db)):
+    """Fix incorrect image paths in database (one-time migration)"""
+    requests = db.query(SparePartRequest).filter(SparePartRequest.image_url.isnot(None)).all()
+    fixed_count = 0
+    
+    for req in requests:
+        if req.image_url and not req.image_url.startswith('/uploads/'):
+            old_url = req.image_url
+            # Fix paths like /spare_parts/ or /spare-parts/
+            if '/spare_parts/' in req.image_url:
+                req.image_url = req.image_url.replace('/spare_parts/', '/uploads/spare-parts/')
+                fixed_count += 1
+            elif '/spare-parts/' in req.image_url:
+                req.image_url = req.image_url.replace('/spare-parts/', '/uploads/spare-parts/')
+                fixed_count += 1
+            
+            if req.image_url != old_url:
+                print(f"Fixed: {old_url} -> {req.image_url}")
+    
+    db.commit()
+    return {"message": f"Fixed {fixed_count} image paths", "success": True}
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
