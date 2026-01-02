@@ -526,16 +526,19 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
     """Validate JWT token and return either app user or seller"""
     auth_header = request.headers.get("Authorization")
     if not auth_header:
+        logger.warning(f"Missing Authorization header from {request.client.host if request.client else 'unknown'}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
+            detail="Not authenticated - Missing Authorization header",
         )
     
     try:
         scheme, token = auth_header.split()
         if scheme.lower() != "bearer":
+            logger.warning(f"Invalid authentication scheme: {scheme}")
             raise HTTPException(status_code=401, detail="Invalid authentication scheme")
     except ValueError:
+        logger.warning(f"Invalid authorization header format: {auth_header[:20]}...")
         raise HTTPException(status_code=401, detail="Invalid authorization header")
     
     try:
@@ -550,6 +553,7 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
         if user_type == "admin":
             admin_user = db.query(User).filter(User.email == email).first()
             if not admin_user:
+                logger.warning(f"Admin not found: {email}")
                 raise HTTPException(status_code=401, detail="Admin not found")
             return {"type": "admin", "user": admin_user}
         
@@ -561,7 +565,8 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
             ).first()
             
             if not seller:
-                raise HTTPException(status_code=401, detail="Seller not found")
+                logger.warning(f"Seller not found or inactive: {email}")
+                raise HTTPException(status_code=401, detail="Seller not found or inactive")
             
             return {"type": "seller", "user": seller}
         
@@ -573,9 +578,11 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
             ).first()
             
             if not app_user:
-                raise HTTPException(status_code=401, detail="User not found")
+                logger.warning(f"User not found or deleted: {email}")
+                raise HTTPException(status_code=401, detail="User not found or deleted")
             
             if app_user.is_banned:
+                logger.warning(f"Banned user attempted access: {email}")
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Your account has been banned"
@@ -583,10 +590,12 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
             
             return {"type": "user", "user": app_user}
         else:
+            logger.warning(f"Invalid user_type in token: {user_type} for email: {email}")
             raise HTTPException(status_code=403, detail="Invalid user type")
             
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    except JWTError as e:
+        logger.warning(f"JWT decode error: {str(e)}")
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 # --- 5. API Endpoints ---
 app = FastAPI()
@@ -1318,11 +1327,32 @@ async def get_all_sellers(db: Session = Depends(get_db)):
 async def get_notifications(
     skip: int = 0,
     limit: int = 100,
-    current_admin: dict = Depends(get_current_user),
+    current_user_data: dict = Depends(get_current_user_or_seller),
     db: Session = Depends(get_db)
 ):
-    """Get all notifications (Admin only)"""
-    notifications = db.query(Notification).offset(skip).limit(limit).all()
+    """Get all notifications - accessible by users, sellers, and admins"""
+    # Admins can see all notifications
+    if current_user_data.get("type") == "admin":
+        notifications = db.query(Notification).offset(skip).limit(limit).all()
+        return notifications
+    
+    # Users and sellers see only notifications relevant to them
+    user_type = current_user_data.get("type")
+    if user_type == "seller":
+        target_type = "seller"
+    elif user_type == "user":
+        target_type = "app_user"
+    else:
+        target_type = None
+    
+    # Get notifications for "all" or specific user type
+    if target_type:
+        notifications = db.query(Notification).filter(
+            (Notification.user_type == "all") | (Notification.user_type == target_type)
+        ).offset(skip).limit(limit).all()
+    else:
+        notifications = db.query(Notification).offset(skip).limit(limit).all()
+    
     return notifications
 
 @app.get("/api/users/notifications")
