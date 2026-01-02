@@ -1262,8 +1262,10 @@ def auth_register(user_data: AppUserRegister, db: Session = Depends(get_db)):
     ).first()
     
     if existing_user:
-        # If social login and user exists, treat as login (return token)
-        if user_data.is_social_login:
+        # Check if it's a social login (explicit flag or implicitly via password pattern from mobile app)
+        is_mobile_social_login = user_data.password.startswith('social_')
+
+        if user_data.is_social_login or is_mobile_social_login:
             # Update social ID if missing
             if user_data.google_id and not existing_user.google_id:
                 existing_user.google_id = user_data.google_id
