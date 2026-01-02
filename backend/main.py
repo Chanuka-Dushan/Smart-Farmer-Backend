@@ -1280,12 +1280,7 @@ def auth_register(user_data: AppUserRegister, db: Session = Depends(get_db)):
             return {
                 "access_token": access_token,
                 "token_type": "bearer",
-                "user": {
-                    "id": existing_user.id,
-                    "email": existing_user.email,
-                    "firstname": existing_user.firstname,
-                    "lastname": existing_user.lastname
-                }
+                "user": AppUserResponse.from_orm(existing_user).dict()
             }
 
         raise HTTPException(
@@ -1323,12 +1318,7 @@ def auth_register(user_data: AppUserRegister, db: Session = Depends(get_db)):
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "user": {
-            "id": new_user.id,
-            "email": new_user.email,
-            "firstname": new_user.firstname,
-            "lastname": new_user.lastname
-        }
+        "user": AppUserResponse.from_orm(new_user).dict()
     }
 
 @app.post("/api/auth/login", response_model=Token)
@@ -1361,12 +1351,7 @@ def auth_login(login_data: UserLogin, db: Session = Depends(get_db)):
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "email": user.email,
-            "firstname": user.firstname,
-            "lastname": user.lastname
-        }
+        "user": AppUserResponse.from_orm(user).dict()
     }
 
 @app.post("/api/auth/social", response_model=Token)
