@@ -522,6 +522,65 @@ async def get_current_app_user(request: Request, db: Session = Depends(get_db)) 
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+async def get_current_user_or_seller(request: Request, db: Session = Depends(get_db)):
+    """Validate JWT token and return either app user or seller"""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+    
+    try:
+        scheme, token = auth_header.split()
+        if scheme.lower() != "bearer":
+            raise HTTPException(status_code=401, detail="Invalid authentication scheme")
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        user_type: str = payload.get("user_type", "admin")
+        
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        
+        # Check if it's a seller
+        if user_type == "seller":
+            seller = db.query(Seller).filter(
+                Seller.email == email,
+                Seller.is_active == True
+            ).first()
+            
+            if not seller:
+                raise HTTPException(status_code=401, detail="Seller not found")
+            
+            return {"type": "seller", "user": seller}
+        
+        # Check if it's an app user
+        elif user_type == "user":
+            app_user = db.query(AppUser).filter(
+                AppUser.email == email,
+                AppUser.is_deleted == False
+            ).first()
+            
+            if not app_user:
+                raise HTTPException(status_code=401, detail="User not found")
+            
+            if app_user.is_banned:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Your account has been banned"
+                )
+            
+            return {"type": "user", "user": app_user}
+        else:
+            raise HTTPException(status_code=403, detail="Invalid user type")
+            
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
 # --- 5. API Endpoints ---
 app = FastAPI()
 
@@ -1685,10 +1744,10 @@ def update_seller_password(
 
 @app.get("/api/spare-parts/requests", response_model=list[SparePartRequestResponse])
 async def get_spare_part_requests(
-    current_user: AppUser = Depends(get_current_app_user),
+    current_user_data: dict = Depends(get_current_user_or_seller),
     db: Session = Depends(get_db)
 ):
-    """Get all active spare part requests"""
+    """Get all active spare part requests - accessible by both users and sellers"""
     requests = db.query(SparePartRequest).filter(SparePartRequest.status == "active").all()
     
     # Add user information to each request
