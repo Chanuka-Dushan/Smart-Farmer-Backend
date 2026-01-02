@@ -69,6 +69,9 @@ export default function ProductsPage() {
         const data = await response.json()
         setRequests(data)
         setFilteredRequests(data)
+      } else {
+        const errorData = await response.json()
+        console.error('Failed to fetch spare part requests:', response.status, errorData)
       }
     } catch (error) {
       console.error('Failed to fetch spare part requests:', error)

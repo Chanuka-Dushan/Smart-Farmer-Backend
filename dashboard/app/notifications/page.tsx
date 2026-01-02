@@ -58,7 +58,12 @@ export default function NotificationsPage() {
 
   const fetchNotifications = async () => {
     try {
-      const response = await fetch('/api/notifications')
+      const token = localStorage.getItem('token')
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/notifications`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
       if (response.ok) {
         const data = await response.json()
         setNotifications(data)
@@ -125,10 +130,12 @@ export default function NotificationsPage() {
         payload.target_user_id = parseInt(formData.target_user_id.trim())
       }
 
-      const response = await fetch('/api/notifications/send', {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/notifications/send`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify(payload),
       })
