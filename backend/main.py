@@ -1433,6 +1433,67 @@ async def auth_logout():
     # For JWT tokens, logout is handled on client side by removing the token
     return MessageResponse(message="Logged out successfully", success=True)
 
+# ============= USER PROFILE ENDPOINTS =============
+
+@app.get("/api/users/me", response_model=AppUserResponse)
+def get_my_profile(current_user: AppUser = Depends(get_current_app_user)):
+    """Get current user's profile"""
+    return current_user
+
+@app.put("/api/users/me", response_model=AppUserResponse)
+def update_my_profile(
+    update_data: AppUserUpdate,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Update current user's profile"""
+    if update_data.firstname is not None:
+        current_user.firstname = update_data.firstname
+    if update_data.lastname is not None:
+        current_user.lastname = update_data.lastname
+    if update_data.phone_number is not None:
+        current_user.phone_number = update_data.phone_number
+    if update_data.address is not None:
+        current_user.address = update_data.address
+    if update_data.fcm_token is not None:
+        current_user.fcm_token = update_data.fcm_token
+    
+    current_user.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    db.refresh(current_user)
+    
+    return current_user
+
+@app.put("/api/users/me/password", response_model=MessageResponse)
+def update_my_password(
+    password_data: PasswordUpdate,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Update current user's password"""
+    if not verify_password(password_data.old_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect"
+        )
+    
+    current_user.hashed_password = hash_password(password_data.new_password)
+    db.commit()
+    
+    return MessageResponse(message="Password updated successfully", success=True)
+
+@app.delete("/api/users/me", response_model=MessageResponse)
+def delete_my_account(
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Soft delete current user's account"""
+    current_user.is_deleted = True
+    current_user.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    
+    return MessageResponse(message="Account deleted successfully", success=True)
+
 # ============= SPARE PARTS ENDPOINTS =============
 
 @app.get("/api/spare-parts/requests", response_model=list[SparePartRequestResponse])
