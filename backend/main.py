@@ -896,6 +896,8 @@ async def update_seller_location(
     if location_data.shop_location_name is not None:
         current_seller.shop_location_name = location_data.shop_location_name
     
+    # Mark onboarding as completed when location is saved
+    current_seller.onboarding_completed = True
     current_seller.updated_at = datetime.now(timezone.utc).isoformat()
     db.commit()
     db.refresh(current_seller)
