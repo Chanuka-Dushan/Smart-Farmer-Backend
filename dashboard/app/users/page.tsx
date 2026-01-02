@@ -86,6 +86,9 @@ function UsersManagement() {
 
   const fetchUsers = async () => {
     try {
+      // Ensure we're on the client side
+      if (typeof window === 'undefined') return
+      
       const token = localStorage.getItem('authToken')
       const response = await fetch(`/api/admin/users?limit=100&search=${searchQuery}`, {
         headers: {
@@ -117,6 +120,9 @@ function UsersManagement() {
 
   const fetchStats = async () => {
     try {
+      // Ensure we're on the client side
+      if (typeof window === 'undefined') return
+      
       const token = localStorage.getItem('authToken')
       const response = await fetch('/api/admin/users/stats', {
         headers: {
@@ -140,6 +146,8 @@ function UsersManagement() {
 
   const handleBanUser = async (user: User) => {
     try {
+      if (typeof window === 'undefined') return
+      
       const token = localStorage.getItem('authToken')
       const endpoint = user.user_type === 'seller' 
         ? `/api/admin/sellers/${user.id}/activate` 
@@ -170,6 +178,8 @@ function UsersManagement() {
     if (!confirm(`Are you sure?`)) return
 
     try {
+      if (typeof window === 'undefined') return
+      
       const token = localStorage.getItem('authToken')
       const endpoint = user.user_type === 'seller' 
         ? `/api/admin/sellers/${user.id}` 

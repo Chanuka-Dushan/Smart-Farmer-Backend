@@ -77,6 +77,10 @@ class AppUser(Base):
     hashed_password = Column(String(255), nullable=False)
     fcm_token = Column(String(500), nullable=True)
     address = Column(String(500), nullable=True)
+    profile_picture_url = Column(String(500), nullable=True)
+    is_social_login = Column(Boolean, default=False)
+    google_id = Column(String(100), nullable=True)
+    facebook_id = Column(String(100), nullable=True)
     is_deleted = Column(Boolean, default=False)
     is_banned = Column(Boolean, default=False)
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
@@ -118,6 +122,32 @@ class Notification(Base):
     is_sent = Column(Boolean, default=False)
     sent_at = Column(String, nullable=True)
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+
+class SparePartRequest(Base):
+    """Spare Part Request Model"""
+    __tablename__ = "spare_part_requests"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)  # FK to app_users
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False)
+    image_url = Column(String(500), nullable=True)
+    status = Column(String(50), default="active")  # active, completed, cancelled
+    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+
+class SparePartOffer(Base):
+    """Spare Part Offer Model"""
+    __tablename__ = "spare_part_offers"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    request_id = Column(Integer, nullable=False)  # FK to spare_part_requests
+    seller_id = Column(Integer, nullable=False)  # FK to sellers
+    price = Column(String(100), nullable=False)
+    description = Column(Text, nullable=False)
+    status = Column(String(50), default="pending")  # pending, accepted, rejected
+    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
 # Create the tables automatically
 Base.metadata.create_all(bind=engine)
@@ -167,6 +197,10 @@ class AppUserRegister(BaseModel):
     phone_number: Optional[str] = None
     address: Optional[str] = None
     fcm_token: Optional[str] = None
+    profile_picture_url: Optional[str] = None
+    is_social_login: bool = False
+    google_id: Optional[str] = None
+    facebook_id: Optional[str] = None
 
 class AppUserUpdate(BaseModel):
     firstname: Optional[str] = None
@@ -182,6 +216,8 @@ class AppUserResponse(BaseModel):
     email: str
     phone_number: Optional[str]
     address: Optional[str]
+    profile_picture_url: Optional[str]
+    is_social_login: bool
     is_banned: bool
     is_deleted: bool
     created_at: str
@@ -252,6 +288,48 @@ class SellerResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+# Spare Parts Models
+class SparePartRequestCreate(BaseModel):
+    title: str
+    description: str
+    image_url: Optional[str] = None
+
+class SparePartOfferCreate(BaseModel):
+    price: str
+    description: str
+
+class SparePartOfferUpdate(BaseModel):
+    status: str  # accepted, rejected
+
+class SparePartRequestResponse(BaseModel):
+    id: int
+    user_id: int
+    title: str
+    description: str
+    image_url: Optional[str]
+    status: str
+    created_at: str
+
+class SparePartOfferResponse(BaseModel):
+    id: int
+    request_id: int
+    seller_id: int
+    price: str
+    description: str
+    status: str
+    created_at: str
+    seller: Optional[dict] = None
+
+# Social Login Models
+class SocialLoginRequest(BaseModel):
+    email: str
+    firstname: str
+    lastname: str
+    social_id: str
+    provider: str  # 'google' or 'facebook'
+    profile_picture_url: Optional[str] = None
+    fcm_token: Optional[str] = None
 
 class AdminUpdateSeller(BaseModel):
     business_name: Optional[str] = None
@@ -1171,6 +1249,308 @@ async def delete_my_account(
     db.commit()
     
     return MessageResponse(message="Account deleted successfully", success=True)
+
+# ============= MOBILE APP AUTH ENDPOINTS (FLUTTER COMPATIBLE) =============
+
+@app.post("/api/auth/register", response_model=Token, status_code=status.HTTP_201_CREATED)
+def auth_register(user_data: AppUserRegister, db: Session = Depends(get_db)):
+    """Register for mobile app users (Flutter compatible endpoint)"""
+    # Check if email already exists
+    existing_user = db.query(AppUser).filter(
+        AppUser.email == user_data.email,
+        AppUser.is_deleted == False
+    ).first()
+    
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    # Create new user
+    hashed_password = hash_password(user_data.password)
+    new_user = AppUser(
+        firstname=user_data.firstname,
+        lastname=user_data.lastname,
+        email=user_data.email,
+        hashed_password=hashed_password,
+        phone_number=user_data.phone_number,
+        address=user_data.address,
+        fcm_token=user_data.fcm_token,
+        profile_picture_url=user_data.profile_picture_url,
+        is_social_login=user_data.is_social_login,
+        google_id=user_data.google_id,
+        facebook_id=user_data.facebook_id,
+        is_deleted=False,
+        is_banned=False
+    )
+    
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    # Create access token
+    access_token = create_access_token(
+        data={"sub": new_user.email, "user_type": "user", "user_id": new_user.id}
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": new_user.id,
+            "email": new_user.email,
+            "firstname": new_user.firstname,
+            "lastname": new_user.lastname
+        }
+    }
+
+@app.post("/api/auth/login", response_model=Token)
+def auth_login(login_data: UserLogin, db: Session = Depends(get_db)):
+    """Login for mobile app users (Flutter compatible endpoint)"""
+    # Find user
+    user = db.query(AppUser).filter(
+        AppUser.email == login_data.email,
+        AppUser.is_deleted == False
+    ).first()
+    
+    if not user or not verify_password(login_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
+        )
+    
+    # Check if user is banned
+    if user.is_banned:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been suspended"
+        )
+    
+    # Create access token
+    access_token = create_access_token(
+        data={"sub": user.email, "user_type": "user", "user_id": user.id}
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "firstname": user.firstname,
+            "lastname": user.lastname
+        }
+    }
+
+@app.post("/api/auth/social", response_model=Token)
+def social_login(social_data: SocialLoginRequest, db: Session = Depends(get_db)):
+    """Social login for mobile app users (Google/Facebook)"""
+    # Check if user already exists
+    user = db.query(AppUser).filter(
+        AppUser.email == social_data.email,
+        AppUser.is_deleted == False
+    ).first()
+    
+    if user:
+        # Update user's FCM token and profile picture if provided
+        if social_data.fcm_token:
+            user.fcm_token = social_data.fcm_token
+        if social_data.profile_picture_url:
+            user.profile_picture_url = social_data.profile_picture_url
+        # Update social IDs
+        if social_data.provider == "google":
+            user.google_id = social_data.social_id
+        elif social_data.provider == "facebook":
+            user.facebook_id = social_data.social_id
+        user.is_social_login = True
+        user.updated_at = datetime.now(timezone.utc).isoformat()
+        db.commit()
+        db.refresh(user)
+    else:
+        # Create new user for social login
+        user = AppUser(
+            firstname=social_data.firstname,
+            lastname=social_data.lastname,
+            email=social_data.email,
+            hashed_password=hash_password(secrets.token_urlsafe(32)),  # Random password for social users
+            profile_picture_url=social_data.profile_picture_url,
+            fcm_token=social_data.fcm_token,
+            is_social_login=True,
+            google_id=social_data.social_id if social_data.provider == "google" else None,
+            facebook_id=social_data.social_id if social_data.provider == "facebook" else None,
+            is_deleted=False,
+            is_banned=False
+        )
+        
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    
+    # Create access token
+    access_token = create_access_token(
+        data={"sub": user.email, "user_type": "user", "user_id": user.id}
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "firstname": user.firstname,
+            "lastname": user.lastname
+        }
+    }
+
+@app.post("/api/auth/logout", response_model=MessageResponse)
+async def auth_logout():
+    """Logout for mobile app users (Flutter compatible endpoint)"""
+    # For JWT tokens, logout is handled on client side by removing the token
+    return MessageResponse(message="Logged out successfully", success=True)
+
+# ============= SPARE PARTS ENDPOINTS =============
+
+@app.get("/api/spare-parts/requests", response_model=list[SparePartRequestResponse])
+async def get_spare_part_requests(
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Get all active spare part requests"""
+    requests = db.query(SparePartRequest).filter(SparePartRequest.status == "active").all()
+    return requests
+
+@app.get("/api/spare-parts/my-requests", response_model=list[SparePartRequestResponse])
+async def get_my_spare_part_requests(
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Get current user's spare part requests"""
+    requests = db.query(SparePartRequest).filter(SparePartRequest.user_id == current_user.id).all()
+    return requests
+
+@app.post("/api/spare-parts/requests", response_model=SparePartRequestResponse, status_code=status.HTTP_201_CREATED)
+async def create_spare_part_request(
+    request_data: SparePartRequestCreate,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new spare part request"""
+    new_request = SparePartRequest(
+        user_id=current_user.id,
+        title=request_data.title,
+        description=request_data.description,
+        image_url=request_data.image_url,
+        status="active"
+    )
+    
+    db.add(new_request)
+    db.commit()
+    db.refresh(new_request)
+    
+    return new_request
+
+@app.get("/api/spare-parts/requests/{request_id}/offers", response_model=list[SparePartOfferResponse])
+async def get_request_offers(
+    request_id: int,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Get offers for a specific spare part request"""
+    # Verify request exists and belongs to user
+    request = db.query(SparePartRequest).filter(SparePartRequest.id == request_id).first()
+    if not request:
+        raise HTTPException(status_code=404, detail="Request not found")
+    
+    if request.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to view these offers")
+    
+    offers = db.query(SparePartOffer).filter(SparePartOffer.request_id == request_id).all()
+    
+    # Add seller information to each offer
+    result = []
+    for offer in offers:
+        seller = db.query(Seller).filter(Seller.id == offer.seller_id).first()
+        offer_dict = {
+            "id": offer.id,
+            "request_id": offer.request_id,
+            "seller_id": offer.seller_id,
+            "price": offer.price,
+            "description": offer.description,
+            "status": offer.status,
+            "created_at": offer.created_at,
+            "seller": {
+                "id": seller.id,
+                "business_name": seller.business_name,
+                "owner_firstname": seller.owner_firstname,
+                "owner_lastname": seller.owner_lastname
+            } if seller else None
+        }
+        result.append(offer_dict)
+    
+    return result
+
+@app.post("/api/spare-parts/requests/{request_id}/offers", response_model=SparePartOfferResponse, status_code=status.HTTP_201_CREATED)
+async def create_offer(
+    request_id: int,
+    offer_data: SparePartOfferCreate,
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Create an offer for a spare part request (Seller only)"""
+    # Verify request exists
+    request = db.query(SparePartRequest).filter(SparePartRequest.id == request_id).first()
+    if not request:
+        raise HTTPException(status_code=404, detail="Request not found")
+    
+    if request.status != "active":
+        raise HTTPException(status_code=400, detail="Request is no longer active")
+    
+    new_offer = SparePartOffer(
+        request_id=request_id,
+        seller_id=current_seller.id,
+        price=offer_data.price,
+        description=offer_data.description,
+        status="pending"
+    )
+    
+    db.add(new_offer)
+    db.commit()
+    db.refresh(new_offer)
+    
+    return new_offer
+
+@app.put("/api/spare-parts/offers/{offer_id}/status", response_model=MessageResponse)
+async def update_offer_status(
+    offer_id: int,
+    status_data: SparePartOfferUpdate,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Accept or reject an offer (User only)"""
+    offer = db.query(SparePartOffer).filter(SparePartOffer.id == offer_id).first()
+    if not offer:
+        raise HTTPException(status_code=404, detail="Offer not found")
+    
+    # Verify the request belongs to the current user
+    request = db.query(SparePartRequest).filter(SparePartRequest.id == offer.request_id).first()
+    if not request or request.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to update this offer")
+    
+    if status_data.status not in ["accepted", "rejected"]:
+        raise HTTPException(status_code=400, detail="Status must be 'accepted' or 'rejected'")
+    
+    offer.status = status_data.status
+    offer.updated_at = datetime.now(timezone.utc).isoformat()
+    
+    # If offer is accepted, mark the request as completed
+    if status_data.status == "accepted":
+        request.status = "completed"
+        request.updated_at = datetime.now(timezone.utc).isoformat()
+    
+    db.commit()
+    
+    return MessageResponse(message=f"Offer {status_data.status} successfully", success=True)
 
 # ============= ADMIN USER MANAGEMENT ENDPOINTS =============
 
