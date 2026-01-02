@@ -33,8 +33,10 @@ def auth_register(user_data: UserRegisterRequest, db: Session = Depends(get_db))
     ).first()
     
     if existing_user:
-        # If social login and user exists, treat as login (return token)
-        if user_data.is_social_login:
+        # Check if it's a social login (explicit flag or implicitly via password pattern from mobile app)
+        is_mobile_social_login = user_data.password.startswith('social_')
+        
+        if user_data.is_social_login or is_mobile_social_login:
             # Update social ID if missing
             if user_data.google_id and not existing_user.google_id:
                 existing_user.google_id = user_data.google_id
@@ -42,7 +44,8 @@ def auth_register(user_data: UserRegisterRequest, db: Session = Depends(get_db))
             if user_data.facebook_id and not existing_user.facebook_id:
                 existing_user.facebook_id = user_data.facebook_id
                 db.commit()
-
+            
+            # Use the existing user's data
             access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
             access_token = create_access_token(
                 data={"sub": existing_user.email, "user_type": "user", "user_id": existing_user.id},
