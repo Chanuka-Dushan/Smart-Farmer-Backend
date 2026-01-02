@@ -1754,8 +1754,8 @@ async def get_spare_part_requests(
     current_user_data: dict = Depends(get_current_user_or_seller),
     db: Session = Depends(get_db)
 ):
-    """Get all active spare part requests - accessible by both users and sellers"""
-    requests = db.query(SparePartRequest).filter(SparePartRequest.status == "active").all()
+    """Get all spare part requests - accessible by users, sellers, and admins"""
+    requests = db.query(SparePartRequest).all()
     
     # Add user information to each request
     result = []
@@ -1788,7 +1788,29 @@ async def get_my_spare_part_requests(
 ):
     """Get current user's spare part requests"""
     requests = db.query(SparePartRequest).filter(SparePartRequest.user_id == current_user.id).all()
-    return requests
+    
+    # Add user information to each request
+    result = []
+    for req in requests:
+        req_dict = {
+            "id": req.id,
+            "user_id": req.user_id,
+            "title": req.title,
+            "description": req.description,
+            "image_url": req.image_url,
+            "status": req.status,
+            "created_at": req.created_at.isoformat() if req.created_at else None,
+            "user": {
+                "id": current_user.id,
+                "full_name": current_user.full_name,
+                "email": current_user.email,
+                "phone": current_user.phone,
+                "profile_picture_url": current_user.profile_picture_url
+            }
+        }
+        result.append(req_dict)
+    
+    return result
 
 @app.post("/api/upload/spare-part-image")
 async def upload_spare_part_image(
