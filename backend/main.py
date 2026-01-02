@@ -1,9 +1,10 @@
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, String, Integer, Boolean, Text, DateTime
@@ -14,6 +15,8 @@ from jose import JWTError, jwt
 import secrets
 from dotenv import load_dotenv
 from sqlalchemy import Integer, Boolean, Text, DateTime
+import shutil
+from pathlib import Path
 
 # Load environment variables from .env file
 load_dotenv()
@@ -322,6 +325,7 @@ class SparePartRequestResponse(BaseModel):
     image_url: Optional[str]
     status: str
     created_at: str
+    user: Optional[dict] = None  # Add user info
 
 class SparePartOfferResponse(BaseModel):
     id: int
@@ -332,6 +336,7 @@ class SparePartOfferResponse(BaseModel):
     status: str
     created_at: str
     seller: Optional[dict] = None
+    request: Optional[dict] = None  # Add request info
 
 # Social Login Models
 class SocialLoginRequest(BaseModel):
@@ -519,6 +524,12 @@ async def get_current_app_user(request: Request, db: Session = Depends(get_db)) 
 
 # --- 5. API Endpoints ---
 app = FastAPI()
+
+# Create uploads directory if it doesn't exist
+Path("uploads").mkdir(exist_ok=True)
+
+# Mount static files for uploaded images
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Add CORS middleware
 app.add_middleware(
@@ -1679,7 +1690,30 @@ async def get_spare_part_requests(
 ):
     """Get all active spare part requests"""
     requests = db.query(SparePartRequest).filter(SparePartRequest.status == "active").all()
-    return requests
+    
+    # Add user information to each request
+    result = []
+    for req in requests:
+        user = db.query(AppUser).filter(AppUser.id == req.user_id).first()
+        req_dict = {
+            "id": req.id,
+            "user_id": req.user_id,
+            "title": req.title,
+            "description": req.description,
+            "image_url": req.image_url,
+            "status": req.status,
+            "created_at": req.created_at.isoformat() if req.created_at else None,
+            "user": {
+                "id": user.id,
+                "full_name": user.full_name,
+                "email": user.email,
+                "phone": user.phone,
+                "profile_picture_url": user.profile_picture_url
+            } if user else None
+        }
+        result.append(req_dict)
+    
+    return result
 
 @app.get("/api/spare-parts/my-requests", response_model=list[SparePartRequestResponse])
 async def get_my_spare_part_requests(
@@ -1689,6 +1723,29 @@ async def get_my_spare_part_requests(
     """Get current user's spare part requests"""
     requests = db.query(SparePartRequest).filter(SparePartRequest.user_id == current_user.id).all()
     return requests
+
+@app.post("/api/upload/spare-part-image")
+async def upload_spare_part_image(
+    file: UploadFile = File(...),
+    current_user: AppUser = Depends(get_current_app_user),
+):
+    """Upload an image for a spare part request"""
+    # Create uploads directory if it doesn't exist
+    upload_dir = Path("uploads/spare-parts")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate unique filename
+    file_extension = file.filename.split('.')[-1] if '.' in file.filename else 'jpg'
+    unique_filename = f"{current_user.id}_{datetime.now(timezone.utc).timestamp()}.{file_extension}"
+    file_path = upload_dir / unique_filename
+    
+    # Save file
+    with file_path.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    # Return the relative URL path
+    image_url = f"/uploads/spare-parts/{unique_filename}"
+    return {"url": image_url, "image_url": image_url}
 
 @app.post("/api/spare-parts/requests", response_model=SparePartRequestResponse, status_code=status.HTTP_201_CREATED)
 async def create_spare_part_request(
@@ -1812,6 +1869,39 @@ async def update_offer_status(
     db.commit()
     
     return MessageResponse(message=f"Offer {status_data.status} successfully", success=True)
+
+@app.get("/api/spare-parts/my-offers", response_model=list[SparePartOfferResponse])
+async def get_my_offers(
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Get all offers made by the current seller"""
+    offers = db.query(SparePartOffer).filter(SparePartOffer.seller_id == current_seller.id).all()
+    
+    # Add request information to each offer
+    result = []
+    for offer in offers:
+        request = db.query(SparePartRequest).filter(SparePartRequest.id == offer.request_id).first()
+        offer_dict = {
+            "id": offer.id,
+            "request_id": offer.request_id,
+            "seller_id": offer.seller_id,
+            "price": offer.price,
+            "description": offer.description,
+            "status": offer.status,
+            "created_at": offer.created_at.isoformat() if offer.created_at else None,
+            "request": {
+                "id": request.id,
+                "title": request.title,
+                "description": request.description,
+                "image_url": request.image_url,
+                "status": request.status
+            } if request else None
+        }
+        result.append(offer_dict)
+    
+    return result
+
 
 # ============= ADMIN USER MANAGEMENT ENDPOINTS =============
 
