@@ -546,8 +546,15 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
         if email is None:
             raise HTTPException(status_code=401, detail="Invalid token")
         
+        # Check if it's an admin
+        if user_type == "admin":
+            admin_user = db.query(User).filter(User.email == email).first()
+            if not admin_user:
+                raise HTTPException(status_code=401, detail="Admin not found")
+            return {"type": "admin", "user": admin_user}
+        
         # Check if it's a seller
-        if user_type == "seller":
+        elif user_type == "seller":
             seller = db.query(Seller).filter(
                 Seller.email == email,
                 Seller.is_active == True
