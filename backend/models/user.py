@@ -17,6 +17,7 @@ class AppUser(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     phone_number = Column(String(20), nullable=True)
     hashed_password = Column(String(255), nullable=False)
+    profile_picture_url = Column(String(500), nullable=True)  # Profile picture URL
     fcm_token = Column(String(500), nullable=True)  # For push notifications
     address = Column(String(500), nullable=True)
     is_deleted = Column(Boolean, default=False)

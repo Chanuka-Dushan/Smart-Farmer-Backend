@@ -1802,9 +1802,9 @@ async def get_my_spare_part_requests(
             "created_at": req.created_at.isoformat() if req.created_at else None,
             "user": {
                 "id": current_user.id,
-                "full_name": current_user.full_name,
+                "full_name": f"{current_user.firstname} {current_user.lastname}",
                 "email": current_user.email,
-                "phone": current_user.phone,
+                "phone": current_user.phone_number,
                 "profile_picture_url": current_user.profile_picture_url
             }
         }
