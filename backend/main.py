@@ -483,7 +483,7 @@ async def get_current_app_user(request: Request, db: Session = Depends(get_db)) 
             raise HTTPException(status_code=401, detail="Invalid token")
         
         # For app users, verify they exist and are not banned/deleted
-        if user_type == "app_user":
+        if user_type == "user":
             app_user = db.query(AppUser).filter(
                 AppUser.email == email,
                 AppUser.is_deleted == False
@@ -1415,6 +1415,80 @@ async def auth_logout():
     # For JWT tokens, logout is handled on client side by removing the token
     return MessageResponse(message="Logged out successfully", success=True)
 
+# ============= SELLER AUTH ENDPOINTS =============
+
+@app.post("/api/sellers/register", response_model=Token, status_code=status.HTTP_201_CREATED)
+def seller_register(seller_data: SellerRegister, db: Session = Depends(get_db)):
+    """Register a new seller"""
+    # Check if email already exists
+    existing_seller = db.query(Seller).filter(Seller.email == seller_data.email).first()
+    if existing_seller:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    # Create new seller
+    hashed_password = hash_password(seller_data.password)
+    new_seller = Seller(
+        business_name=seller_data.business_name,
+        owner_firstname=seller_data.owner_firstname,
+        owner_lastname=seller_data.owner_lastname,
+        email=seller_data.email,
+        phone_number=seller_data.phone_number,
+        hashed_password=hashed_password,
+        business_address=seller_data.business_address,
+        business_description=seller_data.business_description,
+        fcm_token=seller_data.fcm_token,
+        is_verified=False,
+        is_active=True
+    )
+    
+    db.add(new_seller)
+    db.commit()
+    db.refresh(new_seller)
+    
+    # Create access token
+    access_token = create_access_token(
+        data={"sub": new_seller.email, "user_type": "seller", "seller_id": new_seller.id}
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": SellerResponse.from_orm(new_seller).dict()
+    }
+
+@app.post("/api/sellers/login", response_model=Token)
+def seller_login(login_data: UserLogin, db: Session = Depends(get_db)):
+    """Login for sellers"""
+    # Find seller
+    seller = db.query(Seller).filter(Seller.email == login_data.email).first()
+    
+    if not seller or not verify_password(login_data.password, seller.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
+        )
+    
+    # Check if seller is active
+    if not seller.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been deactivated. Please contact support."
+        )
+    
+    # Create access token
+    access_token = create_access_token(
+        data={"sub": seller.email, "user_type": "seller", "seller_id": seller.id}
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": SellerResponse.from_orm(seller).dict()
+    }
+
 # ============= USER PROFILE ENDPOINTS =============
 
 @app.get("/api/users/me", response_model=AppUserResponse)
@@ -1475,6 +1549,79 @@ def delete_my_account(
     db.commit()
     
     return MessageResponse(message="Account deleted successfully", success=True)
+
+# ============= SELLER PROFILE ENDPOINTS =============
+
+@app.get("/api/sellers/me", response_model=SellerResponse)
+def get_my_seller_profile(current_seller: Seller = Depends(get_current_seller)):
+    """Get current seller's profile"""
+    return current_seller
+
+@app.put("/api/sellers/me", response_model=SellerResponse)
+def update_my_seller_profile(
+    update_data: SellerUpdate,
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Update current seller's profile"""
+    if update_data.business_name is not None:
+        current_seller.business_name = update_data.business_name
+    if update_data.owner_firstname is not None:
+        current_seller.owner_firstname = update_data.owner_firstname
+    if update_data.owner_lastname is not None:
+        current_seller.owner_lastname = update_data.owner_lastname
+    if update_data.phone_number is not None:
+        current_seller.phone_number = update_data.phone_number
+    if update_data.business_address is not None:
+        current_seller.business_address = update_data.business_address
+    if update_data.business_description is not None:
+        current_seller.business_description = update_data.business_description
+    if update_data.fcm_token is not None:
+        current_seller.fcm_token = update_data.fcm_token
+    
+    current_seller.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    db.refresh(current_seller)
+    
+    return current_seller
+
+@app.put("/api/sellers/me/location", response_model=SellerResponse)
+def update_seller_location(
+    location_data: SellerUpdate,
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Update seller's location"""
+    if location_data.latitude is not None:
+        current_seller.latitude = location_data.latitude
+    if location_data.longitude is not None:
+        current_seller.longitude = location_data.longitude
+    if location_data.shop_location_name is not None:
+        current_seller.shop_location_name = location_data.shop_location_name
+    
+    current_seller.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    db.refresh(current_seller)
+    
+    return current_seller
+
+@app.put("/api/sellers/me/password", response_model=MessageResponse)
+def update_seller_password(
+    password_data: PasswordUpdate,
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Update seller's password"""
+    if not verify_password(password_data.old_password, current_seller.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect"
+        )
+    
+    current_seller.hashed_password = hash_password(password_data.new_password)
+    db.commit()
+    
+    return MessageResponse(message="Password updated successfully", success=True)
 
 # ============= SPARE PARTS ENDPOINTS =============
 
