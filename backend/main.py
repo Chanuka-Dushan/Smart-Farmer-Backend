@@ -105,6 +105,7 @@ class Seller(Base):
     shop_location_name = Column(String(255), nullable=True)
     is_verified = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
+    onboarding_completed = Column(Boolean, default=False)
     fcm_token = Column(String(500), nullable=True)
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat(), onupdate=lambda: datetime.now(timezone.utc).isoformat())
@@ -283,6 +284,7 @@ class SellerResponse(BaseModel):
     shop_location_name: Optional[str]
     is_verified: bool
     is_active: bool
+    onboarding_completed: bool
     created_at: str
     updated_at: str
 
@@ -600,6 +602,118 @@ async def verify_token(current_user: dict = Depends(get_current_user)):
         "email": current_user["email"]
     }
 
+# ============= UNIFIED MOBILE LOGIN ENDPOINT =============
+
+@app.post("/api/auth/unified-login", response_model=Token)
+def unified_login(login_data: UserLogin, db: Session = Depends(get_db)):
+    """
+    Unified login endpoint for mobile app
+    Checks both app_users and sellers tables and returns appropriate user type
+    """
+    # First try to find in app_users
+    app_user = db.query(AppUser).filter(
+        AppUser.email == login_data.email,
+        AppUser.is_deleted == False
+    ).first()
+    
+    if app_user:
+        # Verify password
+        if not verify_password(login_data.password, app_user.hashed_password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
+        
+        # Check if user is banned
+        if app_user.is_banned:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account has been suspended"
+            )
+        
+        # Update FCM token if provided
+        if login_data.fcm_token:
+            app_user.fcm_token = login_data.fcm_token
+            db.commit()
+        
+        # Create access token for app user
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": app_user.email, "user_type": "user", "user_id": app_user.id},
+            expires_delta=access_token_expires
+        )
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": app_user.id,
+                "email": app_user.email,
+                "firstname": app_user.firstname,
+                "lastname": app_user.lastname,
+                "phone_number": app_user.phone_number,
+                "address": app_user.address,
+                "profile_picture_url": app_user.profile_picture_url,
+                "is_social_login": app_user.is_social_login,
+                "is_banned": app_user.is_banned,
+                "user_type": "user"
+            }
+        }
+    
+    # If not found in app_users, try sellers
+    seller = db.query(Seller).filter(
+        Seller.email == login_data.email,
+        Seller.is_active == True
+    ).first()
+    
+    if seller:
+        # Verify password
+        if not verify_password(login_data.password, seller.hashed_password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
+        
+        # Update FCM token if provided
+        if login_data.fcm_token:
+            seller.fcm_token = login_data.fcm_token
+            db.commit()
+        
+        # Create access token for seller
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": seller.email, "user_type": "seller", "user_id": seller.id},
+            expires_delta=access_token_expires
+        )
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": seller.id,
+                "email": seller.email,
+                "business_name": seller.business_name,
+                "owner_firstname": seller.owner_firstname,
+                "owner_lastname": seller.owner_lastname,
+                "phone_number": seller.phone_number,
+                "business_address": seller.business_address,
+                "business_description": seller.business_description,
+                "latitude": seller.latitude,
+                "longitude": seller.longitude,
+                "shop_location_name": seller.shop_location_name,
+                "is_verified": seller.is_verified,
+                "is_active": seller.is_active,
+                "onboarding_completed": seller.onboarding_completed,
+                "user_type": "seller"
+            }
+        }
+    
+    # If not found in either table
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid email or password"
+    )
+
 @app.get("/me")
 async def get_current_admin(current_user: dict = Depends(get_current_user)):
     """Get current logged-in admin information"""
@@ -635,9 +749,13 @@ def register_seller(seller_data: SellerRegister, db: Session = Depends(get_db)):
         phone_number=seller_data.phone_number,
         business_address=seller_data.business_address,
         business_description=seller_data.business_description,
+        latitude=seller_data.latitude,
+        longitude=seller_data.longitude,
+        shop_location_name=seller_data.shop_location_name,
         fcm_token=seller_data.fcm_token,
         is_verified=False,
-        is_active=True
+        is_active=True,
+        onboarding_completed=False if not seller_data.latitude or not seller_data.longitude else True
     )
     
     db.add(new_seller)
@@ -647,7 +765,7 @@ def register_seller(seller_data: SellerRegister, db: Session = Depends(get_db)):
     # Create access token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": new_seller.email, "user_type": "seller"},
+        data={"sub": new_seller.email, "user_type": "seller", "user_id": new_seller.id},
         expires_delta=access_token_expires
     )
     
@@ -659,7 +777,17 @@ def register_seller(seller_data: SellerRegister, db: Session = Depends(get_db)):
             "email": new_seller.email,
             "business_name": new_seller.business_name,
             "owner_firstname": new_seller.owner_firstname,
-            "owner_lastname": new_seller.owner_lastname
+            "owner_lastname": new_seller.owner_lastname,
+            "phone_number": new_seller.phone_number,
+            "business_address": new_seller.business_address,
+            "business_description": new_seller.business_description,
+            "latitude": new_seller.latitude,
+            "longitude": new_seller.longitude,
+            "shop_location_name": new_seller.shop_location_name,
+            "is_verified": new_seller.is_verified,
+            "is_active": new_seller.is_active,
+            "onboarding_completed": new_seller.onboarding_completed,
+            "user_type": "seller"
         }
     }
 
@@ -1414,80 +1542,6 @@ async def auth_logout():
     """Logout for mobile app users (Flutter compatible endpoint)"""
     # For JWT tokens, logout is handled on client side by removing the token
     return MessageResponse(message="Logged out successfully", success=True)
-
-# ============= SELLER AUTH ENDPOINTS =============
-
-@app.post("/api/sellers/register", response_model=Token, status_code=status.HTTP_201_CREATED)
-def seller_register(seller_data: SellerRegister, db: Session = Depends(get_db)):
-    """Register a new seller"""
-    # Check if email already exists
-    existing_seller = db.query(Seller).filter(Seller.email == seller_data.email).first()
-    if existing_seller:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
-    
-    # Create new seller
-    hashed_password = hash_password(seller_data.password)
-    new_seller = Seller(
-        business_name=seller_data.business_name,
-        owner_firstname=seller_data.owner_firstname,
-        owner_lastname=seller_data.owner_lastname,
-        email=seller_data.email,
-        phone_number=seller_data.phone_number,
-        hashed_password=hashed_password,
-        business_address=seller_data.business_address,
-        business_description=seller_data.business_description,
-        fcm_token=seller_data.fcm_token,
-        is_verified=False,
-        is_active=True
-    )
-    
-    db.add(new_seller)
-    db.commit()
-    db.refresh(new_seller)
-    
-    # Create access token
-    access_token = create_access_token(
-        data={"sub": new_seller.email, "user_type": "seller", "seller_id": new_seller.id}
-    )
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": SellerResponse.from_orm(new_seller).dict()
-    }
-
-@app.post("/api/sellers/login", response_model=Token)
-def seller_login(login_data: UserLogin, db: Session = Depends(get_db)):
-    """Login for sellers"""
-    # Find seller
-    seller = db.query(Seller).filter(Seller.email == login_data.email).first()
-    
-    if not seller or not verify_password(login_data.password, seller.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
-        )
-    
-    # Check if seller is active
-    if not seller.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your account has been deactivated. Please contact support."
-        )
-    
-    # Create access token
-    access_token = create_access_token(
-        data={"sub": seller.email, "user_type": "seller", "seller_id": seller.id}
-    )
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": SellerResponse.from_orm(seller).dict()
-    }
 
 # ============= USER PROFILE ENDPOINTS =============
 

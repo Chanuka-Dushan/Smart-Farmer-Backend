@@ -46,6 +46,7 @@ class Seller(Base):
     shop_location_name = Column(String(255), nullable=True)  # e.g., "Main Market", "Downtown Branch"
     is_verified = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
+    onboarding_completed = Column(Boolean, default=False)
     fcm_token = Column(String(500), nullable=True)  # For push notifications
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
