@@ -1792,6 +1792,14 @@ async def get_my_spare_part_requests(
     # Add user information to each request
     result = []
     for req in requests:
+        # Handle created_at - it might already be a string or a datetime object
+        created_at_str = None
+        if req.created_at:
+            if isinstance(req.created_at, str):
+                created_at_str = req.created_at
+            else:
+                created_at_str = req.created_at.isoformat()
+        
         req_dict = {
             "id": req.id,
             "user_id": req.user_id,
@@ -1799,7 +1807,7 @@ async def get_my_spare_part_requests(
             "description": req.description,
             "image_url": req.image_url if req.image_url else None,
             "status": req.status,
-            "created_at": req.created_at.isoformat() if req.created_at else None,
+            "created_at": created_at_str,
             "user": {
                 "id": current_user.id,
                 "full_name": f"{current_user.firstname} {current_user.lastname}",
