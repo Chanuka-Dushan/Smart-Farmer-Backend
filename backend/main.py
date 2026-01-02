@@ -147,7 +147,7 @@ class SparePartOffer(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     request_id = Column(Integer, nullable=False)  # FK to spare_part_requests
     seller_id = Column(Integer, nullable=False)  # FK to sellers
-    price = Column(String(100), nullable=False)
+    price = Column(Float, nullable=False)
     description = Column(Text, nullable=False)
     status = Column(String(50), default="pending")  # pending, accepted, rejected
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
@@ -311,7 +311,7 @@ class SparePartRequestCreate(BaseModel):
     image_url: Optional[str] = None
 
 class SparePartOfferCreate(BaseModel):
-    price: str
+    price: float
     description: str
 
 class SparePartOfferUpdate(BaseModel):
@@ -331,7 +331,7 @@ class SparePartOfferResponse(BaseModel):
     id: int
     request_id: int
     seller_id: int
-    price: str
+    price: float
     description: str
     status: str
     created_at: str
@@ -1791,20 +1791,29 @@ async def get_spare_part_requests(
     result = []
     for req in requests:
         user = db.query(AppUser).filter(AppUser.id == req.user_id).first()
+        
+        # Handle created_at - it might already be a string or a datetime object
+        created_at_str = None
+        if req.created_at:
+            if isinstance(req.created_at, str):
+                created_at_str = req.created_at
+            else:
+                created_at_str = req.created_at.isoformat()
+        
         req_dict = {
             "id": req.id,
             "user_id": req.user_id,
             "title": req.title,
             "description": req.description,
-            "image_url": req.image_url,
+            "image_url": req.image_url if req.image_url else None,
             "status": req.status,
-            "created_at": req.created_at.isoformat() if req.created_at else None,
+            "created_at": created_at_str,
             "user": {
                 "id": user.id,
-                "full_name": user.full_name,
+                "full_name": f"{user.firstname} {user.lastname}",
                 "email": user.email,
-                "phone": user.phone,
-                "profile_picture_url": user.profile_picture_url
+                "phone": user.phone_number if user.phone_number else None,
+                "profile_picture_url": user.profile_picture_url if user.profile_picture_url else None
             } if user else None
         }
         result.append(req_dict)
