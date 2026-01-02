@@ -4,15 +4,16 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
     const authHeader = request.headers.get('Authorization')
     const searchParams = request.nextUrl.searchParams
+    const { id } = await context.params
     
     // Build query string
     const queryString = searchParams.toString()
-    const url = `${BACKEND_URL}/admin/sellers/${params.id}/activate${queryString ? `?${queryString}` : ''}`
+    const url = `${BACKEND_URL}/admin/sellers/${id}/activate${queryString ? `?${queryString}` : ''}`
 
     const response = await fetch(url, {
       method: 'PUT',

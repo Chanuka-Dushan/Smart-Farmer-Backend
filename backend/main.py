@@ -1262,6 +1262,30 @@ def auth_register(user_data: AppUserRegister, db: Session = Depends(get_db)):
     ).first()
     
     if existing_user:
+        # If social login and user exists, treat as login (return token)
+        if user_data.is_social_login:
+            # Update social ID if missing
+            if user_data.google_id and not existing_user.google_id:
+                existing_user.google_id = user_data.google_id
+                db.commit()
+            if user_data.facebook_id and not existing_user.facebook_id:
+                existing_user.facebook_id = user_data.facebook_id
+                db.commit()
+
+            access_token = create_access_token(
+                data={"sub": existing_user.email, "user_type": "user", "user_id": existing_user.id}
+            )
+            return {
+                "access_token": access_token,
+                "token_type": "bearer",
+                "user": {
+                    "id": existing_user.id,
+                    "email": existing_user.email,
+                    "firstname": existing_user.firstname,
+                    "lastname": existing_user.lastname
+                }
+            }
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
@@ -1801,7 +1825,7 @@ async def get_all_sellers(
     skip: int = 0,
     limit: int = 100,
     search: Optional[str] = None,
-    include_inactive: bool = False,
+    include_inactive: bool = True,
     current_admin: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):

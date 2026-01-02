@@ -4,15 +4,16 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
     const authHeader = request.headers.get('Authorization')
     const searchParams = request.nextUrl.searchParams
+    const { id } = await context.params
     
     // Build query string
     const queryString = searchParams.toString()
-    const url = `${BACKEND_URL}/admin/sellers/${params.id}${queryString ? `?${queryString}` : ''}`
+    const url = `${BACKEND_URL}/admin/sellers/${id}${queryString ? `?${queryString}` : ''}`
 
     const response = await fetch(url, {
       method: 'DELETE',
@@ -40,11 +41,12 @@ export async function DELETE(
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
     const authHeader = request.headers.get('Authorization')
-    const url = `${BACKEND_URL}/admin/sellers/${params.id}`
+    const { id } = await context.params
+    const url = `${BACKEND_URL}/admin/sellers/${id}`
 
     const response = await fetch(url, {
       method: 'GET',
@@ -72,12 +74,13 @@ export async function GET(
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
     const authHeader = request.headers.get('Authorization')
     const body = await request.json()
-    const url = `${BACKEND_URL}/admin/sellers/${params.id}`
+    const { id } = await context.params
+    const url = `${BACKEND_URL}/admin/sellers/${id}`
 
     const response = await fetch(url, {
       method: 'PUT',
