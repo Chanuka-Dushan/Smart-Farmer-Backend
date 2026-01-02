@@ -273,6 +273,11 @@ class SellerUpdate(BaseModel):
     shop_location_name: Optional[str] = None
     fcm_token: Optional[str] = None
 
+class SellerLocationUpdate(BaseModel):
+    latitude: str
+    longitude: str
+    shop_location_name: Optional[str] = None
+
 class SellerResponse(BaseModel):
     id: int
     business_name: str
@@ -881,17 +886,15 @@ async def update_my_seller_password(
 
 @app.put("/api/sellers/me/location", response_model=SellerResponse)
 async def update_seller_location(
-    latitude: str,
-    longitude: str,
-    shop_location_name: Optional[str] = None,
+    location_data: SellerLocationUpdate,
     current_seller: Seller = Depends(get_current_seller),
     db: Session = Depends(get_db)
 ):
     """Update seller's shop location"""
-    current_seller.latitude = latitude
-    current_seller.longitude = longitude
-    if shop_location_name is not None:
-        current_seller.shop_location_name = shop_location_name
+    current_seller.latitude = location_data.latitude
+    current_seller.longitude = location_data.longitude
+    if location_data.shop_location_name is not None:
+        current_seller.shop_location_name = location_data.shop_location_name
     
     current_seller.updated_at = datetime.now(timezone.utc).isoformat()
     db.commit()
@@ -1635,26 +1638,6 @@ def update_my_seller_profile(
         current_seller.business_description = update_data.business_description
     if update_data.fcm_token is not None:
         current_seller.fcm_token = update_data.fcm_token
-    
-    current_seller.updated_at = datetime.now(timezone.utc).isoformat()
-    db.commit()
-    db.refresh(current_seller)
-    
-    return current_seller
-
-@app.put("/api/sellers/me/location", response_model=SellerResponse)
-def update_seller_location(
-    location_data: SellerUpdate,
-    current_seller: Seller = Depends(get_current_seller),
-    db: Session = Depends(get_db)
-):
-    """Update seller's location"""
-    if location_data.latitude is not None:
-        current_seller.latitude = location_data.latitude
-    if location_data.longitude is not None:
-        current_seller.longitude = location_data.longitude
-    if location_data.shop_location_name is not None:
-        current_seller.shop_location_name = location_data.shop_location_name
     
     current_seller.updated_at = datetime.now(timezone.utc).isoformat()
     db.commit()
