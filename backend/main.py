@@ -1575,6 +1575,36 @@ def auth_login(login_data: UserLogin, db: Session = Depends(get_db)):
 @app.post("/api/auth/social", response_model=Token)
 def social_login(social_data: SocialLoginRequest, db: Session = Depends(get_db)):
     """Social login for mobile app users (Google/Facebook)"""
+    # Check if email exists as seller first
+    seller = db.query(Seller).filter(
+        Seller.email == social_data.email,
+        Seller.is_active == True
+    ).first()
+    
+    if seller:
+        # Update seller's FCM token and profile picture if provided
+        if social_data.fcm_token:
+            seller.fcm_token = social_data.fcm_token
+        # Update social IDs
+        if social_data.provider == "google":
+            seller.google_id = social_data.social_id
+        elif social_data.provider == "facebook":
+            seller.facebook_id = social_data.social_id
+        seller.is_social_login = True
+        db.commit()
+        db.refresh(seller)
+        
+        # Create access token for seller
+        access_token = create_access_token(
+            data={"sub": seller.email, "user_type": "seller", "user_id": seller.id}
+        )
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": SellerResponse.from_orm(seller).dict()
+        }
+    
     # Check if user already exists
     user = db.query(AppUser).filter(
         AppUser.email == social_data.email,
