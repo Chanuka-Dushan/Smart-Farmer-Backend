@@ -2002,7 +2002,10 @@ async def get_request_offers(
                 "id": seller.id,
                 "business_name": seller.business_name,
                 "owner_firstname": seller.owner_firstname,
-                "owner_lastname": seller.owner_lastname
+                "owner_lastname": seller.owner_lastname,
+                "latitude": seller.latitude,
+                "longitude": seller.longitude,
+                "shop_location_name": seller.shop_location_name
             } if seller else None
         }
         result.append(offer_dict)
