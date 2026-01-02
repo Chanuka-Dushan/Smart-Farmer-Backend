@@ -50,10 +50,25 @@ def update_price_column():
                 conn.commit()
                 print("Successfully updated price column to REAL")
             else:
-                # For PostgreSQL
-                conn.execute(text("ALTER TABLE spare_part_offers ALTER COLUMN price TYPE REAL USING price::real"))
+                # For PostgreSQL - use proper ALTER COLUMN syntax
+                print("PostgreSQL detected - altering column type...")
+                
+                # First, update any non-numeric values to 0 (if any exist)
+                conn.execute(text("""
+                    UPDATE spare_part_offers 
+                    SET price = '0' 
+                    WHERE price !~ '^[0-9]+(\\.[0-9]+)?$'
+                """))
+                
+                # Alter the column type using USING clause
+                conn.execute(text("""
+                    ALTER TABLE spare_part_offers 
+                    ALTER COLUMN price TYPE DOUBLE PRECISION 
+                    USING CAST(price AS DOUBLE PRECISION)
+                """))
+                
                 conn.commit()
-                print("Successfully updated price column to REAL")
+                print("Successfully updated price column to DOUBLE PRECISION")
         except Exception as e:
             conn.rollback()
             print(f"Error updating price column: {e}")
