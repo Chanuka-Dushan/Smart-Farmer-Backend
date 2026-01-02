@@ -619,18 +619,25 @@ async def fix_image_paths_endpoint(db: Session = Depends(get_db)):
     fixed_count = 0
     
     for req in requests:
-        if req.image_url and not req.image_url.startswith('/uploads/'):
+        if req.image_url:
             old_url = req.image_url
-            # Fix paths like /spare_parts/ or /spare-parts/
+            
+            # Fix various incorrect path formats
             if '/spare_parts/' in req.image_url:
+                # Convert /spare_parts/ to /uploads/spare-parts/
                 req.image_url = req.image_url.replace('/spare_parts/', '/uploads/spare-parts/')
                 fixed_count += 1
-            elif '/spare-parts/' in req.image_url:
-                req.image_url = req.image_url.replace('/spare-parts/', '/uploads/spare-parts/')
+            elif req.image_url.startswith('/uploads/spare_parts/'):
+                # Convert /uploads/spare_parts/ to /uploads/spare-parts/
+                req.image_url = req.image_url.replace('/uploads/spare_parts/', '/uploads/spare-parts/')
+                fixed_count += 1
+            elif req.image_url.startswith('/spare-parts/'):
+                # Add /uploads prefix
+                req.image_url = '/uploads' + req.image_url
                 fixed_count += 1
             
             if req.image_url != old_url:
-                print(f"Fixed: {old_url} -> {req.image_url}")
+                logger.info(f"Fixed image path: {old_url} -> {req.image_url}")
     
     db.commit()
     return {"message": f"Fixed {fixed_count} image paths", "success": True}
