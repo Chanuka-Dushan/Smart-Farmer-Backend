@@ -17,6 +17,11 @@ from dotenv import load_dotenv
 from sqlalchemy import Integer, Boolean, Text, DateTime
 import shutil
 from pathlib import Path
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -1082,7 +1087,7 @@ async def send_notification_endpoint(
 ):
     """Send notification to users with enhanced error handling and validation (Admin only)"""
     try:
-        from fcm_utils import send_notification as fcm_send, send_multicast_notification, logger, validate_fcm_config
+        from fcm_utils import send_notification as fcm_send, send_multicast_notification, validate_fcm_config
         
         # Check Firebase configuration first
         if not validate_fcm_config():
