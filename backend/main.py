@@ -256,6 +256,9 @@ class SellerRegister(BaseModel):
     phone_number: Optional[str] = None
     business_address: Optional[str] = None
     business_description: Optional[str] = None
+    latitude: Optional[str] = None
+    longitude: Optional[str] = None
+    shop_location_name: Optional[str] = None
     fcm_token: Optional[str] = None
 
 class SellerUpdate(BaseModel):
