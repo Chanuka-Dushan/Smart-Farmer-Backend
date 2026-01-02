@@ -99,6 +99,7 @@ class Seller(Base):
     hashed_password = Column(String(255), nullable=False)
     business_address = Column(Text, nullable=True)
     business_description = Column(Text, nullable=True)
+    logo_url = Column(String(500), nullable=True)
     # Location fields
     latitude = Column(String(50), nullable=True)
     longitude = Column(String(50), nullable=True)
@@ -135,7 +136,6 @@ class SparePartRequest(Base):
     image_url = Column(String(500), nullable=True)
     status = Column(String(50), default="active")  # active, completed, cancelled
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
-    updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
 class SparePartOffer(Base):
     """Spare Part Offer Model"""
@@ -268,6 +268,7 @@ class SellerUpdate(BaseModel):
     phone_number: Optional[str] = None
     business_address: Optional[str] = None
     business_description: Optional[str] = None
+    logo_url: Optional[str] = None
     latitude: Optional[str] = None
     longitude: Optional[str] = None
     shop_location_name: Optional[str] = None
@@ -287,6 +288,7 @@ class SellerResponse(BaseModel):
     phone_number: Optional[str]
     business_address: Optional[str]
     business_description: Optional[str]
+    logo_url: Optional[str]
     latitude: Optional[str]
     longitude: Optional[str]
     shop_location_name: Optional[str]
@@ -706,6 +708,7 @@ def unified_login(login_data: UserLogin, db: Session = Depends(get_db)):
                 "phone_number": seller.phone_number,
                 "business_address": seller.business_address,
                 "business_description": seller.business_description,
+                "logo_url": seller.logo_url,
                 "latitude": seller.latitude,
                 "longitude": seller.longitude,
                 "shop_location_name": seller.shop_location_name,
@@ -857,6 +860,8 @@ async def update_my_seller_profile(
         current_seller.business_address = update_data.business_address
     if update_data.business_description is not None:
         current_seller.business_description = update_data.business_description
+    if update_data.logo_url is not None:
+        current_seller.logo_url = update_data.logo_url
     if update_data.fcm_token is not None:
         current_seller.fcm_token = update_data.fcm_token
     
