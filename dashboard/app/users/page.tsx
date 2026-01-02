@@ -41,9 +41,22 @@ interface User {
   email: string
   phone_number: string | null
   address: string | null
-  user_type: 'buyer' | 'seller'
+  user_type: 'app_user' | 'seller'
   is_banned: boolean
   is_deleted: boolean
+  created_at: string
+}
+
+interface Seller {
+  id: number
+  business_name: string
+  owner_firstname: string
+  owner_lastname: string
+  email: string
+  phone_number: string | null
+  business_address: string | null
+  is_active: boolean
+  is_verified: boolean
   created_at: string
 }
 
@@ -90,15 +103,47 @@ function UsersManagement() {
       if (typeof window === 'undefined') return
       
       const token = localStorage.getItem('authToken')
-      const response = await fetch(`/api/admin/users?limit=100&search=${searchQuery}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+      const headers = {
+        'Authorization': `Bearer ${token}`
+      }
+
+      // Fetch app users
+      const usersResponse = await fetch(`/api/admin/users?limit=100&search=${searchQuery}`, {
+        headers,
       })
       
-      if (response.ok) {
-        const data = await response.json()
-        setUsers(data)
+      // Fetch sellers
+      const sellersResponse = await fetch(`/api/admin/sellers?limit=100&search=${searchQuery}`, {
+        headers,
+      })
+      
+      if (usersResponse.ok && sellersResponse.ok) {
+        const usersData = await usersResponse.json()
+        const sellersData = await sellersResponse.json()
+        
+        // Transform app users to include user_type
+        const transformedUsers: User[] = usersData.map((user: any) => ({
+          ...user,
+          user_type: 'app_user' as const
+        }))
+        
+        // Transform sellers to match User interface
+        const transformedSellers: User[] = sellersData.map((seller: Seller) => ({
+          id: seller.id,
+          firstname: seller.owner_firstname,
+          lastname: seller.owner_lastname,
+          email: seller.email,
+          phone_number: seller.phone_number,
+          address: seller.business_address,
+          user_type: 'seller' as const,
+          is_banned: !seller.is_active,
+          is_deleted: false,
+          created_at: seller.created_at
+        }))
+        
+        // Combine both arrays
+        const combinedUsers = [...transformedUsers, ...transformedSellers]
+        setUsers(combinedUsers)
       } else {
         toast({
           title: "Error",
@@ -308,7 +353,7 @@ function UsersManagement() {
                       <TableCell>{user.email}</TableCell>
                       <TableCell>
                         <Badge variant="outline" className={user.user_type === 'seller' ? "border-emerald-500 text-emerald-600" : "border-blue-500 text-blue-600"}>
-                          {user.user_type?.toUpperCase() || 'UNKNOWN'}
+                          {user.user_type === 'app_user' ? 'BUYER' : 'SELLER'}
                         </Badge>
                       </TableCell>
                       <TableCell>
