@@ -2083,6 +2083,15 @@ async def get_my_offers(
     result = []
     for offer in offers:
         request = db.query(SparePartRequest).filter(SparePartRequest.id == offer.request_id).first()
+        
+        # Handle created_at - it might be a string or datetime object
+        created_at_str = None
+        if offer.created_at:
+            if isinstance(offer.created_at, str):
+                created_at_str = offer.created_at
+            else:
+                created_at_str = offer.created_at.isoformat()
+        
         offer_dict = {
             "id": offer.id,
             "request_id": offer.request_id,
@@ -2090,7 +2099,7 @@ async def get_my_offers(
             "price": offer.price,
             "description": offer.description,
             "status": offer.status,
-            "created_at": offer.created_at.isoformat() if offer.created_at else None,
+            "created_at": created_at_str,
             "request": {
                 "id": request.id,
                 "title": request.title,
