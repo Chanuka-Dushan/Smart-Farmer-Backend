@@ -43,6 +43,27 @@ def register_user(user_data: UserRegisterRequest, db: Session = Depends(get_db))
     ).first()
     
     if existing_user:
+        # If social login and user exists, treat as login (return token)
+        if user_data.is_social_login:
+            # Update social ID if missing
+            if user_data.google_id and not existing_user.google_id:
+                existing_user.google_id = user_data.google_id
+                db.commit()
+            if user_data.facebook_id and not existing_user.facebook_id:
+                existing_user.facebook_id = user_data.facebook_id
+                db.commit()
+
+            access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+            access_token = create_access_token(
+                data={"sub": existing_user.email, "user_type": "user"},
+                expires_delta=access_token_expires
+            )
+            return UserLoginResponse(
+                access_token=access_token,
+                token_type="bearer",
+                user=UserResponse.from_orm(existing_user)
+            )
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
