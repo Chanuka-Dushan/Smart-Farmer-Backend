@@ -380,7 +380,7 @@ function UsersManagement() {
                       <TableCell className="font-medium">
                         <div className="flex items-center gap-3">
                           <div className="h-8 w-8 rounded-full bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center text-white text-sm font-semibold">
-                            {user.firstname[0]}{user.lastname[0]}
+                            {user.firstname?.[0] || ''}{user.lastname?.[0] || ''}
                           </div>
                           {user.firstname} {user.lastname}
                         </div>
@@ -392,7 +392,7 @@ function UsersManagement() {
                             ? "border-emerald-500 text-emerald-600 bg-emerald-50" 
                             : "border-blue-500 text-blue-600 bg-blue-50"
                         }>
-                          {user.user_type.toUpperCase()}
+                          {user.user_type?.toUpperCase() || 'UNKNOWN'}
                         </Badge>
                       </TableCell>
                       <TableCell>{user.phone_number || '-'}</TableCell>

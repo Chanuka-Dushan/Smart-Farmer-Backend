@@ -112,7 +112,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
             <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800">
               <div className="h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-semibold">
-                {user?.email?.charAt(0).toUpperCase() || 'A'}
+                {user?.email?.charAt(0)?.toUpperCase() || 'A'}
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium truncate">Admin</p>

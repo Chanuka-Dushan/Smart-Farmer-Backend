@@ -300,7 +300,7 @@ function UsersManagement() {
                       <TableCell className="font-medium">
                         <div className="flex items-center gap-3">
                           <div className={`h-8 w-8 rounded-full flex items-center justify-center text-white text-xs font-bold ${user.user_type === 'seller' ? 'bg-emerald-500' : 'bg-blue-500'}`}>
-                            {user.firstname[0]}{user.lastname[0]}
+                            {user.firstname?.[0] || ''}{user.lastname?.[0] || ''}
                           </div>
                           {user.firstname} {user.lastname}
                         </div>
@@ -308,7 +308,7 @@ function UsersManagement() {
                       <TableCell>{user.email}</TableCell>
                       <TableCell>
                         <Badge variant="outline" className={user.user_type === 'seller' ? "border-emerald-500 text-emerald-600" : "border-blue-500 text-blue-600"}>
-                          {user.user_type.toUpperCase()}
+                          {user.user_type?.toUpperCase() || 'UNKNOWN'}
                         </Badge>
                       </TableCell>
                       <TableCell>
