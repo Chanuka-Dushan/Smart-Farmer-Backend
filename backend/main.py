@@ -671,7 +671,13 @@ MODEL_PATH = "smart_farmer_vision_v1.h5"
 
 # Check if we should disable TensorFlow in production (for performance)
 # Only disable if explicitly set via environment variable
-DISABLE_TENSORFLOW = os.getenv("DISABLE_TENSORFLOW", "false").lower() == "true"
+# But also disable automatically in production environments for reliability
+DISABLE_TENSORFLOW = (
+    os.getenv("DISABLE_TENSORFLOW", "false").lower() == "true" or
+    os.getenv("DYNO") is not None or  # Heroku
+    os.getenv("RENDER") is not None or  # Render
+    os.getenv("RAILWAY_ENVIRONMENT") is not None  # Railway
+)
 
 print(f"🔧 TensorFlow disabled: {DISABLE_TENSORFLOW}")
 
@@ -809,6 +815,13 @@ async def predict_lifecycle(
         
         # 1. Calculate Total Effective Capacity (Reduced by Damage & Risk)
         effective_capacity = fresh_life * (1.0 - visual_damage - future_penalty)
+        
+        # BONUS: If part is in good condition (< 20% damage), extend life by up to 50%
+        # This accounts for well-maintained parts lasting longer than rated life
+        if visual_damage < 0.20:  # Less than 20% damage
+            condition_bonus = (0.20 - visual_damage) / 0.20 * 0.50  # Up to 50% bonus
+            effective_capacity *= (1.0 + condition_bonus)
+            print(f"✨ Condition Bonus: +{int(condition_bonus * 100)}% life extension")
         
         # 2. Calculate Real Usage (Inflated by Historical Stress)
         real_usage_impact = usage_hours * hist_stress

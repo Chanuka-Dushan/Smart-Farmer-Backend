@@ -26,7 +26,16 @@ MANUAL_KNOWLEDGE_BASE = {
     "brake pad": 800,
     "piston": 4000,
     "radiator": 6000,
-    "starter motor": 2000
+    "starter motor": 2000,
+    # Fasteners and hardware (typically last much longer)
+    "nut": 10000,
+    "bolt": 10000,
+    "screw": 8000,
+    "washer": 12000,
+    "bearing": 6000,
+    "gear": 8000,
+    "chain": 4000,
+    "shaft": 10000
 }
 
 def load_cache():
