@@ -772,97 +772,96 @@ async def predict_lifecycle(
         print(f"\n--- 📥 NEW REQUEST: {part_name} | Hours: {usage_hours} | Location: {location} ---")
         print(f"📸 Image received: {image.filename} ({image.content_type})")
 
-    # A. GET FRESH LIFESPAN (From AI Knowledge / Gemini)
-    if ai_available:
-        fresh_life = ai_knowledge.get_standard_lifespan(part_name)
-        print(f"🤖 AI Knowledge: Available - Lifespan: {fresh_life} hours")
-    else:
-        fresh_life = 500  # Default fallback
-        print(f"⚠️ AI Knowledge: Not available - Using fallback: {fresh_life} hours")
+        # A. GET FRESH LIFESPAN (From AI Knowledge / Gemini)
+        if ai_available:
+            fresh_life = ai_knowledge.get_standard_lifespan(part_name)
+            print(f"🤖 AI Knowledge: Available - Lifespan: {fresh_life} hours")
+        else:
+            fresh_life = 500  # Default fallback
+            print(f"⚠️ AI Knowledge: Not available - Using fallback: {fresh_life} hours")
 
-    # B. ANALYZE VISUAL DAMAGE (From .h5 Model)
-    visual_damage = 0.0
-    if cnn_model and tensorflow_available:
-        # Preprocess Image
-        img_data = await image.read()
-        print(f"🖼️ Image data received: {len(img_data)} bytes")
-        img = Image.open(BytesIO(img_data)).convert('RGB')
-        img = img.resize((224, 224))
-        img_array = np.array(img) / 255.0
-        img_array = np.expand_dims(img_array, axis=0)
+        # B. ANALYZE VISUAL DAMAGE (From .h5 Model)
+        visual_damage = 0.0
+        if cnn_model and tensorflow_available:
+            # Preprocess Image
+            img_data = await image.read()
+            print(f"🖼️ Image data received: {len(img_data)} bytes")
+            img = Image.open(BytesIO(img_data)).convert('RGB')
+            img = img.resize((224, 224))
+            img_array = np.array(img) / 255.0
+            img_array = np.expand_dims(img_array, axis=0)
+            
+            # Predict
+            prediction = cnn_model.predict(img_array)
+            visual_damage = float(prediction[0][0])
+            print(f"👁️ Vision Model: Detected {int(visual_damage * 100)}% Physical Damage")
+        else:
+            # Fallback if TensorFlow not available or model not loaded
+            print("⚠️ Vision analysis unavailable. Using simulation mode.")
+            visual_damage = 0.35
+            print("⚠️ Simulation: Simulating 35% Visual Damage")
+            visual_damage = 0.35
+
+        # C. ANALYZE TIME (Historical + Future)
+        # 1. Past Stress
+        hist_stress, hist_reason = get_historical_stress_factor(location, part_name)
         
-        # Predict
-        prediction = cnn_model.predict(img_array)
-        visual_damage = float(prediction[0][0])
-        print(f"👁️ Vision Model: Detected {int(visual_damage * 100)}% Physical Damage")
-    else:
-        # Fallback if TensorFlow not available or model not loaded
-        print("⚠️ Vision analysis unavailable. Using simulation mode.")
-        visual_damage = 0.35
-        print("⚠️ Simulation: Simulating 35% Visual Damage")
-        visual_damage = 0.35
+        # 2. Future Risk
+        future_penalty, future_msg = check_future_risk(location)
 
-    # C. ANALYZE TIME (Historical + Future)
-    # 1. Past Stress
-    hist_stress, hist_reason = get_historical_stress_factor(location, part_name)
-    
-    # 2. Future Risk
-    future_penalty, future_msg = check_future_risk(location)
+        # D. FINAL CALCULATION (The Master Formula)
+        # Formula: Remaining = (Fresh_Life * (1 - Visual_Damage - Future_Risk)) - (Usage * Historical_Stress)
+        
+        # 1. Calculate Total Effective Capacity (Reduced by Damage & Risk)
+        effective_capacity = fresh_life * (1.0 - visual_damage - future_penalty)
+        
+        # 2. Calculate Real Usage (Inflated by Historical Stress)
+        real_usage_impact = usage_hours * hist_stress
+        # 3. Remaining Life
+        remaining = effective_capacity - real_usage_impact
+        remaining = max(0, int(remaining))  # No negative numbers
 
-    # D. FINAL CALCULATION (The Master Formula)
-    # Formula: Remaining = (Fresh_Life * (1 - Visual_Damage - Future_Risk)) - (Usage * Historical_Stress)
-    
-    # 1. Calculate Total Effective Capacity (Reduced by Damage & Risk)
-    effective_capacity = fresh_life * (1.0 - visual_damage - future_penalty)
-    
-    # 2. Calculate Real Usage (Inflated by Historical Stress)
-    real_usage_impact = usage_hours * hist_stress
-    
-    # 3. Remaining Life
-    remaining = effective_capacity - real_usage_impact
-    remaining = max(0, int(remaining))  # No negative numbers
+        # E. DETERMINE STATUS COLOR
+        status = "GOOD"
+        color_code = "#008000"  # Green
 
-    # E. DETERMINE STATUS COLOR
-    status = "GOOD"
-    color_code = "#008000"  # Green
+        if remaining < 100:
+            status = "CRITICAL REPLACEMENT"
+            color_code = "#FF0000"  # Red
+        elif remaining < 300:
+            status = "WARNING"
+            color_code = "#FFA500"  # Orange
+        
+        # Urgent Override: If Storm Coming AND Low Life
+        if future_penalty > 0 and remaining < 400:
+            status = "URGENT (STORM RISK)"
+            color_code = "#FF4500"  # Red-Orange
 
-    if remaining < 100:
-        status = "CRITICAL REPLACEMENT"
-        color_code = "#FF0000"  # Red
-    elif remaining < 300:
-        status = "WARNING"
-        color_code = "#FFA500"  # Orange
-    
-    # Urgent Override: If Storm Coming AND Low Life
-    if future_penalty > 0 and remaining < 400:
-        status = "URGENT (STORM RISK)"
-        color_code = "#FF4500"  # Red-Orange
-
-    # F. RETURN JSON TO FLUTTER APP
-    result = {
-        "part_name": part_name,
-        "ai_knowledge": {
-            "fresh_lifespan": f"{fresh_life} Hours"
-        },
-        "visual_scan": {
-            "wear_detected": f"{int(visual_damage * 100)}%",
-            "analysis_model": "MobileNetV2 (Transfer Learning)"
-        },
-        "environment": {
-            "location": location,
-            "historical_stress": f"{hist_reason} (Load: {hist_stress}x)",
-            "future_forecast": future_msg
-        },
-        "prediction": {
-            "remaining_life": f"{remaining} Hours",
-            "status": status,
-            "color_code": color_code
+        # F. RETURN JSON TO FLUTTER APP
+        result = {
+            "part_name": part_name,
+            "ai_knowledge": {
+                "fresh_lifespan": f"{fresh_life} Hours"
+            },
+            "visual_scan": {
+                "wear_detected": f"{int(visual_damage * 100)}%",
+                "analysis_model": "MobileNetV2 (Transfer Learning)"
+            },
+            "environment": {
+                "location": location,
+                "historical_stress": f"{hist_reason} (Load: {hist_stress}x)",
+                "future_forecast": future_msg
+            },
+            "prediction": {
+                "remaining_life": f"{remaining} Hours",
+                "status": status,
+                "color_code": color_code
+            }
         }
-    }
 
-    print(f"✅ Sending Result: {status} | Remaining: {remaining} Hours")
-    logger.info(f"📤 API Response: Status={status}, Remaining={remaining} Hours, Location={location}")
-    return result
+        print(f"✅ Sending Result: {status} | Remaining: {remaining} Hours")
+        logger.info(f"📤 API Response: Status={status}, Remaining={remaining} Hours, Location={location}")
+        return result
     except Exception as e:
         logger.error(f"❌ Lifecycle Prediction Error: {str(e)} | Part: {part_name} | Location: {location}")
         print(f"❌ Error in lifecycle prediction: {e}")
