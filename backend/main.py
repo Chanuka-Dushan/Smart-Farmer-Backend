@@ -2041,10 +2041,10 @@ async def upload_spare_part_image(
 @app.post("/api/upload/profile-picture")
 async def upload_profile_picture(
     file: UploadFile = File(...),
-    current_user: AppUser = Depends(get_current_app_user),
+    current_user_data: dict = Depends(get_current_user_or_seller),
     db: Session = Depends(get_db)
 ):
-    """Upload profile picture"""
+    """Upload profile picture for user or seller"""
     if not spaces_configured:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -2052,33 +2052,50 @@ async def upload_profile_picture(
         )
     
     try:
+        user_type = current_user_data["type"]
+        user = current_user_data["user"]
+        
         # Generate unique filename
-        unique_filename = generate_unique_filename(current_user.id, file.filename)
+        unique_filename = generate_unique_filename(user.id, file.filename)
         
         # Get content type
         content_type = get_content_type(file.filename)
         
         # Upload to Spaces
         file.file.seek(0)  # Reset file pointer
+        
+        # Use appropriate folder based on user type
+        folder = "profile-pictures" if user_type == "user" else "seller-logos"
+        
         image_url = upload_file_to_spaces(
             file.file,
             unique_filename,
             content_type=content_type,
-            folder="profile-pictures"
+            folder=folder
         )
         
         if not image_url:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to upload profile picture"
+                detail="Failed to upload image"
             )
         
-        # Update user profile picture URL in database
-        current_user.profile_picture_url = image_url
+        # Update profile picture URL based on user type
+        if user_type == "user":
+            user.profile_picture_url = image_url
+            logger.info(f"User {user.id} updated profile picture: {image_url}")
+        elif user_type == "seller":
+            user.logo_url = image_url
+            logger.info(f"Seller {user.id} updated logo: {image_url}")
+        
         db.commit()
         
-        logger.info(f"User {current_user.id} updated profile picture: {image_url}")
-        return {"url": image_url, "image_url": image_url, "profile_picture_url": image_url}
+        return {
+            "url": image_url, 
+            "image_url": image_url, 
+            "profile_picture_url": image_url,
+            "logo_url": image_url  # For sellers
+        }
         
     except Exception as e:
         logger.error(f"Error uploading profile picture: {str(e)}")
