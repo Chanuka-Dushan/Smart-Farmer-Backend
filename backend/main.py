@@ -530,20 +530,29 @@ async def get_current_app_user(request: Request, db: Session = Depends(get_db)) 
 async def get_current_user_or_seller(request: Request, db: Session = Depends(get_db)):
     """Validate JWT token and return either app user or seller"""
     auth_header = request.headers.get("Authorization")
-    if not auth_header:
-        logger.warning(f"Missing Authorization header from {request.client.host if request.client else 'unknown'}")
+    if not auth_header or auth_header.strip() == "":
+        logger.warning(f"Missing or empty Authorization header from {request.client.host if request.client else 'unknown'}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated - Missing Authorization header",
         )
     
     try:
-        scheme, token = auth_header.split()
+        parts = auth_header.split()
+        if len(parts) != 2:
+            logger.warning(f"Invalid authorization header format (expected 2 parts, got {len(parts)}): {auth_header[:50]}...")
+            raise HTTPException(status_code=401, detail="Invalid authorization header format")
+        
+        scheme, token = parts
         if scheme.lower() != "bearer":
             logger.warning(f"Invalid authentication scheme: {scheme}")
             raise HTTPException(status_code=401, detail="Invalid authentication scheme")
-    except ValueError:
-        logger.warning(f"Invalid authorization header format: {auth_header[:20]}...")
+        
+        if not token or token.strip() == "":
+            logger.warning(f"Empty token provided")
+            raise HTTPException(status_code=401, detail="Invalid token - token is empty")
+    except ValueError as e:
+        logger.warning(f"Error parsing authorization header: {str(e)}")
         raise HTTPException(status_code=401, detail="Invalid authorization header")
     
     try:
@@ -552,7 +561,8 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
         user_type: str = payload.get("user_type", "admin")
         
         if email is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
+            logger.warning("Token missing 'sub' field")
+            raise HTTPException(status_code=401, detail="Invalid token format")
         
         # Check if it's an admin
         if user_type == "admin":
@@ -598,15 +608,24 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
             logger.warning(f"Invalid user_type in token: {user_type} for email: {email}")
             raise HTTPException(status_code=403, detail="Invalid user type")
             
+    except jwt.ExpiredSignatureError:
+        logger.warning(f"Expired token from {request.client.host if request.client else 'unknown'}")
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.InvalidTokenError as e:
+        logger.warning(f"Invalid token error: {type(e).__name__} - {str(e)}")
+        raise HTTPException(status_code=401, detail="Invalid or malformed token")
     except JWTError as e:
-        logger.warning(f"JWT decode error: {str(e)}")
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        logger.warning(f"JWT decode error: {type(e).__name__} - {str(e)}")
+        raise HTTPException(status_code=401, detail="Token validation failed")
 
 # --- 5. API Endpoints ---
 app = FastAPI()
 
-# Create uploads directory if it doesn't exist
+# Create uploads directory structure if it doesn't exist
 Path("uploads").mkdir(exist_ok=True)
+Path("uploads/spare-parts").mkdir(parents=True, exist_ok=True)
+Path("uploads/profile_pictures").mkdir(parents=True, exist_ok=True)
+logger.info("✓ Upload directories verified/created")
 
 # Mount static files for uploaded images
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
@@ -614,7 +633,26 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 # Temporary admin endpoint to fix image paths
 @app.post("/api/admin/fix-image-paths")
 async def fix_image_paths_endpoint(db: Session = Depends(get_db)):
-    """Fix incorrect image paths in database (one-time migration)"""
+    """Fix incorrect image paths in database and move files to correct location"""
+    import os
+    
+    # Ensure correct directory exists
+    spare_parts_dir = Path("uploads/spare-parts")
+    spare_parts_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Move files from incorrect directories
+    moved_count = 0
+    old_dirs = [Path("uploads/spare_parts"), Path("spare_parts"), Path("spare-parts")]
+    for old_dir in old_dirs:
+        if old_dir.exists() and old_dir.is_dir():
+            for file in old_dir.glob("*.jpg"):
+                new_path = spare_parts_dir / file.name
+                if not new_path.exists():
+                    shutil.move(str(file), str(new_path))
+                    logger.info(f"Moved file: {file.name}")
+                    moved_count += 1
+    
+    # Fix database paths
     requests = db.query(SparePartRequest).filter(SparePartRequest.image_url.isnot(None)).all()
     fixed_count = 0
     
@@ -624,23 +662,32 @@ async def fix_image_paths_endpoint(db: Session = Depends(get_db)):
             
             # Fix various incorrect path formats
             if '/spare_parts/' in req.image_url:
-                # Convert /spare_parts/ to /uploads/spare-parts/
                 req.image_url = req.image_url.replace('/spare_parts/', '/uploads/spare-parts/')
                 fixed_count += 1
             elif req.image_url.startswith('/uploads/spare_parts/'):
-                # Convert /uploads/spare_parts/ to /uploads/spare-parts/
                 req.image_url = req.image_url.replace('/uploads/spare_parts/', '/uploads/spare-parts/')
                 fixed_count += 1
             elif req.image_url.startswith('/spare-parts/'):
-                # Add /uploads prefix
                 req.image_url = '/uploads' + req.image_url
                 fixed_count += 1
+            elif not req.image_url.startswith('/uploads/spare-parts/'):
+                # Handle any other malformed path - extract filename and fix
+                filename = os.path.basename(req.image_url)
+                if filename:
+                    req.image_url = f'/uploads/spare-parts/{filename}'
+                    fixed_count += 1
             
             if req.image_url != old_url:
                 logger.info(f"Fixed image path: {old_url} -> {req.image_url}")
     
     db.commit()
-    return {"message": f"Fixed {fixed_count} image paths", "success": True}
+    
+    return {
+        "message": f"Fixed {fixed_count} image paths in database, moved {moved_count} files",
+        "paths_fixed": fixed_count,
+        "files_moved": moved_count,
+        "success": True
+    }
 
 # Add CORS middleware
 app.add_middleware(
