@@ -18,8 +18,14 @@ from sqlalchemy import Integer, Boolean, Text, DateTime
 import shutil
 from pathlib import Path
 import logging
-import tensorflow as tf
-import numpy as np
+try:
+    import tensorflow as tf
+    import numpy as np
+    tensorflow_available = True
+    print("✓ TensorFlow available")
+except ImportError as e:
+    tensorflow_available = False
+    print(f"⚠ TensorFlow not available: {e}")
 from io import BytesIO
 from PIL import Image
 import requests
@@ -659,12 +665,16 @@ WEATHER_API_KEY = "d304e6f2db12ee21033d9aa1213a508f"
 
 # --- Vision Model Configuration ---
 MODEL_PATH = "smart_farmer_vision_v1.h5"
-try:
-    cnn_model = tf.keras.models.load_model(MODEL_PATH)
-    print(f"✅ Vision Model Loaded: {MODEL_PATH}")
-except Exception as e:
-    cnn_model = None
-    print(f"⚠️ Vision Model Not Found ({e}). Using Simulation Mode.")
+cnn_model = None
+if tensorflow_available:
+    try:
+        cnn_model = tf.keras.models.load_model(MODEL_PATH)
+        print(f"✅ Vision Model Loaded: {MODEL_PATH}")
+    except Exception as e:
+        cnn_model = None
+        print(f"⚠️ Vision Model Not Found ({e}). Using Simulation Mode.")
+else:
+    print("⚠️ TensorFlow not available. Using Simulation Mode for vision analysis.")
 
 # --- Historical Stress Engine ---
 def get_historical_stress_factor(location: str, part_name: str):
@@ -748,7 +758,7 @@ async def predict_lifecycle(
 
     # B. ANALYZE VISUAL DAMAGE (From .h5 Model)
     visual_damage = 0.0
-    if cnn_model:
+    if cnn_model and tensorflow_available:
         # Preprocess Image
         img_data = await image.read()
         img = Image.open(BytesIO(img_data)).convert('RGB')
@@ -761,7 +771,9 @@ async def predict_lifecycle(
         visual_damage = float(prediction[0][0])
         print(f"👁️ Vision Model: Detected {int(visual_damage * 100)}% Physical Damage")
     else:
-        # Fallback if training was skipped
+        # Fallback if TensorFlow not available or model not loaded
+        print("⚠️ Vision analysis unavailable. Using simulation mode.")
+        visual_damage = 0.35
         print("⚠️ Simulation: Simulating 35% Visual Damage")
         visual_damage = 0.35
 
