@@ -668,24 +668,32 @@ WEATHER_API_KEY = "d304e6f2db12ee21033d9aa1213a508f"
 # Set environment variable: DISABLE_TENSORFLOW=true
 # This prevents worker timeouts and improves startup performance
 MODEL_PATH = "smart_farmer_vision_v1.h5"
+
 # Check if we should disable TensorFlow in production (for performance)
-DISABLE_TENSORFLOW = os.getenv("DISABLE_TENSORFLOW", "false").lower() == "true"
+# Also disable if running in production environment (common cloud platforms)
+DISABLE_TENSORFLOW = (
+    os.getenv("DISABLE_TENSORFLOW", "false").lower() == "true" or
+    os.getenv("DYNO") is not None or  # Heroku
+    os.getenv("RENDER") is not None or  # Render
+    os.getenv("RAILWAY_ENVIRONMENT") is not None  # Railway
+)
+
+print(f"🔧 TensorFlow disabled: {DISABLE_TENSORFLOW}")
 
 cnn_model = None
 if tensorflow_available and not DISABLE_TENSORFLOW:
     try:
         # Disable TensorFlow warnings and optimize for production
-        import os
         os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TensorFlow logging
         os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN optimizations that cause warnings
-        
+
         cnn_model = tf.keras.models.load_model(MODEL_PATH)
         print(f"✅ Vision Model Loaded: {MODEL_PATH}")
     except Exception as e:
         cnn_model = None
         print(f"⚠️ Vision Model Not Found ({e}). Using Simulation Mode.")
 elif DISABLE_TENSORFLOW:
-    print("⚠️ TensorFlow disabled via DISABLE_TENSORFLOW env var. Using Simulation Mode.")
+    print("⚠️ TensorFlow disabled for production performance. Using Simulation Mode.")
 else:
     print("⚠️ TensorFlow not available. Using Simulation Mode for vision analysis.")
 
@@ -760,20 +768,24 @@ async def predict_lifecycle(
     location: str = Form(...),
     image: UploadFile = File(...) 
 ):
-    print(f"\n--- 📥 NEW REQUEST: {part_name} | Location: {location} ---")
+    try:
+        print(f"\n--- 📥 NEW REQUEST: {part_name} | Hours: {usage_hours} | Location: {location} ---")
+        print(f"📸 Image received: {image.filename} ({image.content_type})")
 
     # A. GET FRESH LIFESPAN (From AI Knowledge / Gemini)
     if ai_available:
         fresh_life = ai_knowledge.get_standard_lifespan(part_name)
+        print(f"🤖 AI Knowledge: Available - Lifespan: {fresh_life} hours")
     else:
         fresh_life = 500  # Default fallback
-    print(f"📘 Standard Lifespan: {fresh_life} hours")
+        print(f"⚠️ AI Knowledge: Not available - Using fallback: {fresh_life} hours")
 
     # B. ANALYZE VISUAL DAMAGE (From .h5 Model)
     visual_damage = 0.0
     if cnn_model and tensorflow_available:
         # Preprocess Image
         img_data = await image.read()
+        print(f"🖼️ Image data received: {len(img_data)} bytes")
         img = Image.open(BytesIO(img_data)).convert('RGB')
         img = img.resize((224, 224))
         img_array = np.array(img) / 255.0
@@ -849,7 +861,12 @@ async def predict_lifecycle(
     }
 
     print(f"✅ Sending Result: {status} | Remaining: {remaining} Hours")
+    logger.info(f"📤 API Response: Status={status}, Remaining={remaining} Hours, Location={location}")
     return result
+    except Exception as e:
+        logger.error(f"❌ Lifecycle Prediction Error: {str(e)} | Part: {part_name} | Location: {location}")
+        print(f"❌ Error in lifecycle prediction: {e}")
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 if not spaces_configured:
     logger.warning("⚠ Spaces not configured - uploads will fail")
     # Keep local directories for fallback
