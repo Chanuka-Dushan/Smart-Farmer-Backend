@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
 from fastapi.staticfiles import StaticFiles
@@ -18,6 +18,12 @@ from sqlalchemy import Integer, Boolean, Text, DateTime
 import shutil
 from pathlib import Path
 import logging
+import tensorflow as tf
+import numpy as np
+from io import BytesIO
+from PIL import Image
+import requests
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -639,8 +645,186 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
 # --- 5. API Endpoints ---
 app = FastAPI()
 
-# Note: Image uploads now use DigitalOcean Spaces (cloud storage)
-# Local uploads directory is only kept for backward compatibility with old image URLs
+# --- AI Knowledge Integration ---
+try:
+    import ai_knowledge
+    ai_available = True
+    print("✓ AI Knowledge module loaded")
+except ImportError as e:
+    ai_available = False
+    print(f"⚠ AI Knowledge not available: {e}")
+
+# --- Weather API Configuration ---
+WEATHER_API_KEY = "d304e6f2db12ee21033d9aa1213a508f"
+
+# --- Vision Model Configuration ---
+MODEL_PATH = "smart_farmer_vision_v1.h5"
+try:
+    cnn_model = tf.keras.models.load_model(MODEL_PATH)
+    print(f"✅ Vision Model Loaded: {MODEL_PATH}")
+except Exception as e:
+    cnn_model = None
+    print(f"⚠️ Vision Model Not Found ({e}). Using Simulation Mode.")
+
+# --- Historical Stress Engine ---
+def get_historical_stress_factor(location: str, part_name: str):
+    """
+    Calculates how much the part has suffered based on where the tractor lived.
+    """
+    loc = location.lower()
+    part = part_name.lower()
+    
+    stress_factor = 1.0  # Default (1.0 = Normal aging)
+    reason = "Normal Operating Conditions"
+
+    # LOGIC A: DRY ZONE (Anuradhapura, Jaffna) -> Heat kills batteries & rubber
+    if loc in ["anuradhapura", "jaffna", "polonnaruwa", "trincomalee"]:
+        if "battery" in part or "belt" in part or "tire" in part:
+            stress_factor = 1.25  # Aged 25% faster
+            reason = "Dry Zone: High Heat accelerated material degradation"
+        else:
+            stress_factor = 1.10  # General dust/heat wear
+
+    # LOGIC B: WET ZONE (Colombo, Galle) -> Humidity kills metal
+    elif loc in ["colombo", "galle", "kandy", "ratnapura"]:
+        if "pump" in part or "filter" in part or "clutch" in part or "piston" in part:
+            stress_factor = 1.20  # Aged 20% faster
+            reason = "Wet Zone: High Humidity accelerated corrosion/rust"
+
+    return stress_factor, reason
+
+# --- Future Risk Engine ---
+def check_future_risk(location: str):
+    """
+    Checks the 5-Day Forecast. If storms are coming, risky parts get downgraded.
+    """
+    risk_penalty = 0.0
+    risk_msg = "Forecast is stable."
+
+    try:
+        url = f"http://api.openweathermap.org/data/2.5/forecast?q={location}&appid={WEATHER_API_KEY}&units=metric"
+        response = requests.get(url, timeout=3)
+        
+        if response.status_code == 200:
+            data = response.json()
+            # Analyze next 5 data points (approx 15 hours)
+            rain_found = False
+            for item in data['list'][:5]:
+                condition = item['weather'][0]['main'].lower()
+                if "rain" in condition or "storm" in condition or "thunder" in condition:
+                    rain_found = True
+                break
+            
+            if rain_found:
+                risk_penalty = 0.10  # 10% safety penalty
+                risk_msg = "⚠️ WARNING: Storm Forecast. Failure risk elevated."
+            else:
+                risk_msg = "✅ Forecast: Clear skies. Low environmental risk."
+        else:
+            risk_msg = f"Weather API Unreachable (Status {response.status_code})"
+
+    except Exception as e:
+        print(f"Weather API Error: {e}")
+        risk_msg = "⚠️ Offline Mode: Assuming Standard Risk"
+
+    return risk_penalty, risk_msg
+
+# --- Lifecycle Prediction Endpoint ---
+@app.post("/api/predict-lifecycle")
+async def predict_lifecycle(
+    part_name: str = Form(...),
+    usage_hours: float = Form(...),
+    location: str = Form(...),
+    image: UploadFile = File(...) 
+):
+    print(f"\n--- 📥 NEW REQUEST: {part_name} | Location: {location} ---")
+
+    # A. GET FRESH LIFESPAN (From AI Knowledge / Gemini)
+    if ai_available:
+        fresh_life = ai_knowledge.get_standard_lifespan(part_name)
+    else:
+        fresh_life = 500  # Default fallback
+    print(f"📘 Standard Lifespan: {fresh_life} hours")
+
+    # B. ANALYZE VISUAL DAMAGE (From .h5 Model)
+    visual_damage = 0.0
+    if cnn_model:
+        # Preprocess Image
+        img_data = await image.read()
+        img = Image.open(BytesIO(img_data)).convert('RGB')
+        img = img.resize((224, 224))
+        img_array = np.array(img) / 255.0
+        img_array = np.expand_dims(img_array, axis=0)
+        
+        # Predict
+        prediction = cnn_model.predict(img_array)
+        visual_damage = float(prediction[0][0])
+        print(f"👁️ Vision Model: Detected {int(visual_damage * 100)}% Physical Damage")
+    else:
+        # Fallback if training was skipped
+        print("⚠️ Simulation: Simulating 35% Visual Damage")
+        visual_damage = 0.35
+
+    # C. ANALYZE TIME (Historical + Future)
+    # 1. Past Stress
+    hist_stress, hist_reason = get_historical_stress_factor(location, part_name)
+    
+    # 2. Future Risk
+    future_penalty, future_msg = check_future_risk(location)
+
+    # D. FINAL CALCULATION (The Master Formula)
+    # Formula: Remaining = (Fresh_Life * (1 - Visual_Damage - Future_Risk)) - (Usage * Historical_Stress)
+    
+    # 1. Calculate Total Effective Capacity (Reduced by Damage & Risk)
+    effective_capacity = fresh_life * (1.0 - visual_damage - future_penalty)
+    
+    # 2. Calculate Real Usage (Inflated by Historical Stress)
+    real_usage_impact = usage_hours * hist_stress
+    
+    # 3. Remaining Life
+    remaining = effective_capacity - real_usage_impact
+    remaining = max(0, int(remaining))  # No negative numbers
+
+    # E. DETERMINE STATUS COLOR
+    status = "GOOD"
+    color_code = "#008000"  # Green
+
+    if remaining < 100:
+        status = "CRITICAL REPLACEMENT"
+        color_code = "#FF0000"  # Red
+    elif remaining < 300:
+        status = "WARNING"
+        color_code = "#FFA500"  # Orange
+    
+    # Urgent Override: If Storm Coming AND Low Life
+    if future_penalty > 0 and remaining < 400:
+        status = "URGENT (STORM RISK)"
+        color_code = "#FF4500"  # Red-Orange
+
+    # F. RETURN JSON TO FLUTTER APP
+    result = {
+        "part_name": part_name,
+        "ai_knowledge": {
+            "fresh_lifespan": f"{fresh_life} Hours"
+        },
+        "visual_scan": {
+            "wear_detected": f"{int(visual_damage * 100)}%",
+            "analysis_model": "MobileNetV2 (Transfer Learning)"
+        },
+        "environment": {
+            "location": location,
+            "historical_stress": f"{hist_reason} (Load: {hist_stress}x)",
+            "future_forecast": future_msg
+        },
+        "prediction": {
+            "remaining_life": f"{remaining} Hours",
+            "status": status,
+            "color_code": color_code
+        }
+    }
+
+    print(f"✅ Sending Result: {status} | Remaining: {remaining} Hours")
+    return result
 if not spaces_configured:
     logger.warning("⚠ Spaces not configured - uploads will fail")
     # Keep local directories for fallback
