@@ -670,13 +670,8 @@ WEATHER_API_KEY = "d304e6f2db12ee21033d9aa1213a508f"
 MODEL_PATH = "smart_farmer_vision_v1.h5"
 
 # Check if we should disable TensorFlow in production (for performance)
-# Also disable if running in production environment (common cloud platforms)
-DISABLE_TENSORFLOW = (
-    os.getenv("DISABLE_TENSORFLOW", "false").lower() == "true" or
-    os.getenv("DYNO") is not None or  # Heroku
-    os.getenv("RENDER") is not None or  # Render
-    os.getenv("RAILWAY_ENVIRONMENT") is not None  # Railway
-)
+# Only disable if explicitly set via environment variable
+DISABLE_TENSORFLOW = os.getenv("DISABLE_TENSORFLOW", "false").lower() == "true"
 
 print(f"🔧 TensorFlow disabled: {DISABLE_TENSORFLOW}")
 
