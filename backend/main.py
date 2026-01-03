@@ -664,15 +664,28 @@ except ImportError as e:
 WEATHER_API_KEY = "d304e6f2db12ee21033d9aa1213a508f"
 
 # --- Vision Model Configuration ---
+# To disable TensorFlow in production (recommended for Heroku/similar platforms):
+# Set environment variable: DISABLE_TENSORFLOW=true
+# This prevents worker timeouts and improves startup performance
 MODEL_PATH = "smart_farmer_vision_v1.h5"
+# Check if we should disable TensorFlow in production (for performance)
+DISABLE_TENSORFLOW = os.getenv("DISABLE_TENSORFLOW", "false").lower() == "true"
+
 cnn_model = None
-if tensorflow_available:
+if tensorflow_available and not DISABLE_TENSORFLOW:
     try:
+        # Disable TensorFlow warnings and optimize for production
+        import os
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TensorFlow logging
+        os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN optimizations that cause warnings
+        
         cnn_model = tf.keras.models.load_model(MODEL_PATH)
         print(f"✅ Vision Model Loaded: {MODEL_PATH}")
     except Exception as e:
         cnn_model = None
         print(f"⚠️ Vision Model Not Found ({e}). Using Simulation Mode.")
+elif DISABLE_TENSORFLOW:
+    print("⚠️ TensorFlow disabled via DISABLE_TENSORFLOW env var. Using Simulation Mode.")
 else:
     print("⚠️ TensorFlow not available. Using Simulation Mode for vision analysis.")
 
