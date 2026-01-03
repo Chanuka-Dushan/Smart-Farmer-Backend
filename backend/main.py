@@ -26,6 +26,24 @@ logger = logging.getLogger(__name__)
 # Load environment variables from .env file
 load_dotenv()
 
+# Initialize DigitalOcean Spaces
+try:
+    from spaces_utils import (
+        upload_file_to_spaces,
+        delete_file_from_spaces,
+        generate_unique_filename,
+        is_spaces_configured,
+        get_content_type
+    )
+    spaces_configured = is_spaces_configured()
+    if spaces_configured:
+        print("✓ DigitalOcean Spaces configured")
+    else:
+        print("⚠ DigitalOcean Spaces not configured - check SPACES_KEY and SPACES_SECRET")
+except ImportError as e:
+    print(f"⚠ Spaces utils not available: {e}")
+    spaces_configured = False
+
 # Initialize Firebase Admin SDK early
 try:
     from fcm_utils import initialize_firebase_admin
@@ -621,14 +639,18 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
 # --- 5. API Endpoints ---
 app = FastAPI()
 
-# Create uploads directory structure if it doesn't exist
-Path("uploads").mkdir(exist_ok=True)
-Path("uploads/spare-parts").mkdir(parents=True, exist_ok=True)
-Path("uploads/profile_pictures").mkdir(parents=True, exist_ok=True)
-logger.info("✓ Upload directories verified/created")
-
-# Mount static files for uploaded images
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+# Note: Image uploads now use DigitalOcean Spaces (cloud storage)
+# Local uploads directory is only kept for backward compatibility with old image URLs
+if not spaces_configured:
+    logger.warning("⚠ Spaces not configured - uploads will fail")
+    # Keep local directories for fallback
+    Path("uploads").mkdir(exist_ok=True)
+    Path("uploads/spare-parts").mkdir(parents=True, exist_ok=True)
+    Path("uploads/profile_pictures").mkdir(parents=True, exist_ok=True)
+    # Mount static files for legacy URLs
+    app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+else:
+    logger.info("✓ Using DigitalOcean Spaces for image storage")
 
 # Temporary admin endpoint to fix image paths
 @app.post("/api/admin/fix-image-paths")
@@ -1978,22 +2000,92 @@ async def upload_spare_part_image(
     current_user: AppUser = Depends(get_current_app_user),
 ):
     """Upload an image for a spare part request"""
-    # Create uploads directory if it doesn't exist
-    upload_dir = Path("uploads/spare-parts")
-    upload_dir.mkdir(parents=True, exist_ok=True)
+    if not spaces_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Image upload service not configured"
+        )
     
-    # Generate unique filename
-    file_extension = file.filename.split('.')[-1] if '.' in file.filename else 'jpg'
-    unique_filename = f"{current_user.id}_{datetime.now(timezone.utc).timestamp()}.{file_extension}"
-    file_path = upload_dir / unique_filename
+    try:
+        # Generate unique filename
+        unique_filename = generate_unique_filename(current_user.id, file.filename)
+        
+        # Get content type
+        content_type = get_content_type(file.filename)
+        
+        # Upload to Spaces
+        file.file.seek(0)  # Reset file pointer
+        image_url = upload_file_to_spaces(
+            file.file,
+            unique_filename,
+            content_type=content_type,
+            folder="spare-parts"
+        )
+        
+        if not image_url:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to upload image"
+            )
+        
+        logger.info(f"User {current_user.id} uploaded spare part image: {image_url}")
+        return {"url": image_url, "image_url": image_url}
+        
+    except Exception as e:
+        logger.error(f"Error uploading spare part image: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload image: {str(e)}"
+        )
+
+@app.post("/api/upload/profile-picture")
+async def upload_profile_picture(
+    file: UploadFile = File(...),
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Upload profile picture"""
+    if not spaces_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Image upload service not configured"
+        )
     
-    # Save file
-    with file_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    # Return the relative URL path
-    image_url = f"/uploads/spare-parts/{unique_filename}"
-    return {"url": image_url, "image_url": image_url}
+    try:
+        # Generate unique filename
+        unique_filename = generate_unique_filename(current_user.id, file.filename)
+        
+        # Get content type
+        content_type = get_content_type(file.filename)
+        
+        # Upload to Spaces
+        file.file.seek(0)  # Reset file pointer
+        image_url = upload_file_to_spaces(
+            file.file,
+            unique_filename,
+            content_type=content_type,
+            folder="profile-pictures"
+        )
+        
+        if not image_url:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to upload profile picture"
+            )
+        
+        # Update user profile picture URL in database
+        current_user.profile_picture_url = image_url
+        db.commit()
+        
+        logger.info(f"User {current_user.id} updated profile picture: {image_url}")
+        return {"url": image_url, "image_url": image_url, "profile_picture_url": image_url}
+        
+    except Exception as e:
+        logger.error(f"Error uploading profile picture: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload profile picture: {str(e)}"
+        )
 
 @app.post("/api/spare-parts/requests", response_model=SparePartRequestResponse, status_code=status.HTTP_201_CREATED)
 async def create_spare_part_request(
