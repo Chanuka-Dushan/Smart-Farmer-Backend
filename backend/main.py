@@ -932,11 +932,11 @@ async def predict_lifecycle(
         # 1. Calculate Total Effective Capacity (Reduced by Damage & Risk)
         effective_capacity = fresh_life * (1.0 - visual_damage - future_penalty)
         
-        # BONUS: If part is in good condition (< 20% damage), extend life by up to 50%
+        # BONUS: If part is in good condition (< 20% damage), extend life by up to 30%
         # This accounts for well-maintained parts lasting longer than rated life
         condition_bonus_applied = 0.0
         if visual_damage < 0.20:  # Less than 20% damage
-            condition_bonus = (0.20 - visual_damage) / 0.20 * 0.50  # Up to 50% bonus
+            condition_bonus = (0.20 - visual_damage) / 0.20 * 0.30  # Up to 30% bonus (reduced from 50%)
             effective_capacity *= (1.0 + condition_bonus)
             condition_bonus_applied = condition_bonus
             logger.info(f"✨ Condition Bonus: +{int(condition_bonus * 100)}% life extension")
@@ -947,6 +947,10 @@ async def predict_lifecycle(
         # 3. Remaining Life
         remaining = effective_capacity - real_usage_impact
         remaining = max(0, int(remaining))  # No negative numbers
+        
+        # IMPORTANT: Cap remaining life to not exceed fresh lifespan
+        # Even with bonuses, remaining life should never be more than the original rated life
+        remaining = min(remaining, fresh_life)
 
         # E. DETERMINE STATUS COLOR
         status = "GOOD"
@@ -963,13 +967,20 @@ async def predict_lifecycle(
         if future_penalty > 0 and remaining < 400:
             status = "URGENT (STORM RISK)"
             color_code = "#FF4500"  # Red-Orange
+        
+        # F. CONVERT TO DAYS (8 hours per day of operation)
+        HOURS_PER_DAY = 8
+        fresh_life_days = round(fresh_life / HOURS_PER_DAY, 1)
+        effective_capacity_days = round(effective_capacity / HOURS_PER_DAY, 1)
+        real_usage_days = round(real_usage_impact / HOURS_PER_DAY, 1)
+        remaining_days = round(remaining / HOURS_PER_DAY, 1)
 
-        # F. RETURN JSON TO FLUTTER APP
+        # G. RETURN JSON TO FLUTTER APP
         result = {
             "part_name": part_name,
             "ai_knowledge": {
-                "fresh_lifespan": f"{fresh_life} Hours",
-                "source": "Gemini AI" if ai_available else "Simulation"
+                "fresh_lifespan": f"{fresh_life_days} Days ({fresh_life} hours)",
+                "source": "Groq AI" if ai_available else "Simulation"
             },
             "visual_scan": {
                 "wear_detected": f"{int(visual_damage * 100)}%",
@@ -982,12 +993,12 @@ async def predict_lifecycle(
                 "future_forecast": future_msg
             },
             "calculation": {
-                "effective_capacity": f"{int(effective_capacity)} Hours",
+                "effective_capacity": f"{effective_capacity_days} Days ({int(effective_capacity)} hours)",
                 "condition_bonus": f"+{int(condition_bonus_applied * 100)}%",
-                "real_usage_impact": f"{int(real_usage_impact)} Hours"
+                "real_usage_impact": f"{real_usage_days} Days ({int(real_usage_impact)} hours)"
             },
             "prediction": {
-                "remaining_life": f"{remaining} Hours",
+                "remaining_life": f"{remaining_days} Days ({remaining} hours)",
                 "status": status,
                 "color_code": color_code
             },
@@ -998,7 +1009,7 @@ async def predict_lifecycle(
             }
         }
 
-        logger.info(f"✅ Prediction Complete: {status} | Remaining: {remaining} Hours | Time: {result['metadata']['processing_time_ms']}ms")
+        logger.info(f"✅ Prediction Complete: {status} | Remaining: {remaining_days} Days ({remaining} hours) | Time: {result['metadata']['processing_time_ms']}ms")
         
         # Log to database if enabled
         if os.getenv("ENABLE_PREDICTION_LOGGING", "true").lower() == "true":

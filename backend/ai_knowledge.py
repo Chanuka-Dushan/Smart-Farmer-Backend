@@ -95,15 +95,29 @@ def query_groq_api(part_name: str) -> int:
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are an expert in agricultural machinery and tractor parts. When asked about part lifespans, respond with ONLY a number representing hours of operation. Do not include any other text, explanations, or units."
+                    "content": """You are an expert in agricultural machinery maintenance. 
+When asked about tractor part lifespans, provide realistic operational hours based on:
+- Heavy-duty agricultural use
+- Typical replacement intervals
+- Industry standards for farm equipment
+
+Respond with ONLY a number representing operational hours. No explanations, units, or other text.
+
+Examples:
+- Engine: 8000-15000 hours
+- Battery: 2000-3000 hours  
+- Hydraulic pump: 4000-6000 hours
+- Nuts/bolts: 20000+ hours (rarely replaced)
+- Belts: 800-1500 hours
+- Filters: 200-500 hours"""
                 },
                 {
                     "role": "user",
-                    "content": f"What is the average operational lifespan in hours for a tractor {part_name}? Reply with only the number."
+                    "content": f"What is the typical operational lifespan in hours for a tractor {part_name} under normal agricultural use? Reply with only the number."
                 }
             ],
             "model": "llama-3.3-70b-versatile",  # Groq's fast Llama model
-            "temperature": 0,
+            "temperature": 0.1,  # Lower temperature for more consistent results
             "max_tokens": 50
         }
         
