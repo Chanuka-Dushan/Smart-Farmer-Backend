@@ -2303,6 +2303,67 @@ def update_seller_password(
 
 # ============= SPARE PARTS ENDPOINTS =============
 
+@app.post("/api/spare-parts/upload-image")
+async def upload_spare_part_image(
+    image: UploadFile = File(...),
+    current_user_data: dict = Depends(get_current_user_or_seller),
+    db: Session = Depends(get_db)
+):
+    """Upload an image for spare part request"""
+    try:
+        logger.info(f"📸 Uploading spare part image: {image.filename}")
+        
+        # Validate file type
+        if not image.content_type.startswith('image/'):
+            raise HTTPException(status_code=400, detail="Only image files are allowed")
+        
+        # Validate file size (max 10MB)
+        MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+        image_data = await image.read()
+        if len(image_data) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=400, detail="Image file too large (max 10MB)")
+        
+        # Generate unique filename
+        file_ext = image.filename.split('.')[-1] if '.' in image.filename else 'jpg'
+        unique_filename = f"spare_part_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.{file_ext}"
+        
+        # Upload to storage
+        try:
+            # Check if we should use Spaces
+            if USE_SPACES:
+                from spaces_utils import upload_to_spaces
+                logger.info("🚀 Uploading to Digital Ocean Spaces...")
+                
+                image_url = await upload_to_spaces(
+                    image_data,
+                    unique_filename,
+                    content_type=image.content_type
+                )
+                logger.info(f"✅ Image uploaded to Spaces: {image_url}")
+            else:
+                # Save locally
+                logger.info("💾 Saving image locally...")
+                os.makedirs(UPLOAD_DIR, exist_ok=True)
+                file_path = os.path.join(UPLOAD_DIR, unique_filename)
+                
+                with open(file_path, 'wb') as f:
+                    f.write(image_data)
+                
+                image_url = f"{BASE_URL}/uploads/{unique_filename}"
+                logger.info(f"✅ Image saved locally: {image_url}")
+        
+        except Exception as e:
+            logger.error(f"❌ Failed to upload image: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}")
+        
+        return {"image_url": image_url, "message": "Image uploaded successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Unexpected error during image upload: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}")
+
 @app.get("/api/spare-parts/requests", response_model=list[SparePartRequestResponse])
 async def get_spare_part_requests(
     current_user_data: dict = Depends(get_current_user_or_seller),
