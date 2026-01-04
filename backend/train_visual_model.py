@@ -47,7 +47,7 @@ try:
     import pandas as pd
     TENSORFLOW_AVAILABLE = True
 except ImportError as e:
-    print(f"❌ ERROR: Required libraries not installed: {e}")
+    print(f" ERROR: Required libraries not installed: {e}")
     print("Install with: pip install tensorflow scikit-learn matplotlib seaborn")
     sys.exit(1)
 
@@ -124,25 +124,25 @@ class SmartFarmerModelTrainer:
         logger.info(f"Damaged parts: {len(damaged_images)} images")
         
         if len(good_images) < 50:
-            logger.warning(f"⚠️  Low number of good part images: {len(good_images)}")
+            logger.warning(f"  Low number of good part images: {len(good_images)}")
         
         if len(damaged_images) < 50:
-            logger.warning(f"⚠️  Low number of damaged part images: {len(damaged_images)}")
+            logger.warning(f"  Low number of damaged part images: {len(damaged_images)}")
         
         # Check class imbalance
         imbalance_ratio = max(len(good_images), len(damaged_images)) / max(min(len(good_images), len(damaged_images)), 1)
         if imbalance_ratio > 3:
-            logger.warning(f"⚠️  Class imbalance detected: {imbalance_ratio:.2f}:1 ratio")
+            logger.warning(f"  Class imbalance detected: {imbalance_ratio:.2f}:1 ratio")
             logger.warning("   Consider using class weights or data augmentation")
         
         # Check for suspicious files (all same size)
         damaged_sizes = [img.stat().st_size for img in damaged_images[:100]]
         if len(set(damaged_sizes)) == 1 and len(damaged_sizes) > 10:
-            logger.warning("⚠️  Suspicious: Many damaged images have identical file sizes")
+            logger.warning("  Suspicious: Many damaged images have identical file sizes")
             logger.warning("   This may indicate synthetic or corrupted data")
         
         total_images = len(good_images) + len(damaged_images)
-        logger.info(f"✅ Total dataset: {total_images} images")
+        logger.info(f" Total dataset: {total_images} images")
         
         return total_images >= 100  # Minimum viable dataset
     
@@ -338,7 +338,7 @@ class SmartFarmerModelTrainer:
             verbose=1
         )
         
-        logger.info("✅ Training completed!")
+        logger.info(" Training completed!")
     
     def evaluate_model(self):
         """Evaluate the trained model"""
@@ -411,7 +411,7 @@ class SmartFarmerModelTrainer:
         
         save_model_metadata(str(final_model_path), metadata)
         
-        logger.info(f"✅ Final model saved to: {final_model_path}")
+        logger.info(f" Final model saved to: {final_model_path}")
         logger.info(f"   Accuracy: {accuracy:.2%}")
         logger.info(f"   F1 Score: {evaluation_results.get('f1_score', 0):.2%}")
         
@@ -441,7 +441,7 @@ class SmartFarmerModelTrainer:
             final_model_path = self.save_final_model(results)
             
             logger.info("=" * 60)
-            logger.info("✅ TRAINING PIPELINE COMPLETED SUCCESSFULLY!")
+            logger.info(" TRAINING PIPELINE COMPLETED SUCCESSFULLY!")
             logger.info("=" * 60)
             logger.info(f"Model saved to: {final_model_path}")
             logger.info(f"Training artifacts in: {self.version_dir}")
@@ -449,7 +449,7 @@ class SmartFarmerModelTrainer:
             return True
             
         except Exception as e:
-            logger.error(f"❌ Training pipeline failed: {e}", exc_info=True)
+            logger.error(f" Training pipeline failed: {e}", exc_info=True)
             return False
 
 
@@ -470,11 +470,11 @@ def main():
     success = trainer.run_complete_pipeline()
     
     if success:
-        print("\n✅ Training completed successfully!")
+        print("\n Training completed successfully!")
         print(f"Check {trainer.version_dir} for detailed results")
         sys.exit(0)
     else:
-        print("\n❌ Training failed! Check logs for details")
+        print("\n Training failed! Check logs for details")
         sys.exit(1)
 
 

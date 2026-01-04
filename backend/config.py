@@ -53,11 +53,33 @@ SPACES_BUCKET = os.getenv("SPACES_BUCKET")
 # Training Configuration
 TRAINING_CONFIG = {
     "img_size": (224, 224),
-    "batch_size": int(os.getenv("BATCH_SIZE", "16")),
-    "epochs": int(os.getenv("EPOCHS", "50")),
-    "learning_rate": float(os.getenv("LEARNING_RATE", "0.0001")),
-    "validation_split": float(os.getenv("VALIDATION_SPLIT", "0.2")),
-    "test_split": float(os.getenv("TEST_SPLIT", "0.1")),
+    "batch_size": int(os.getenv("BATCH_SIZE", "16")),  # Reduced for better learning
+    "epochs": int(os.getenv("EPOCHS", "100")),  # Increased from 50
+    "learning_rate": float(os.getenv("LEARNING_RATE", "0.0001")),  # Lower for fine-tuning
+    "validation_split": 0.2,
+    "test_split": 0.1,
+    "early_stopping_patience": 15,  # Increased patience
+    "reduce_lr_patience": 5,
+    "min_lr": 1e-7,
+    "class_weight_auto": True,
+    
+    # Data Augmentation (Enhanced)
+    "augmentation": {
+        "rotation_range": 30,  # Increased from 20
+        "width_shift_range": 0.25,  # Increased from 0.2
+        "height_shift_range": 0.25,
+        "shear_range": 0.25,
+        "zoom_range": 0.25,
+        "horizontal_flip": True,
+        "vertical_flip": True,  # Added vertical flip
+        "brightness_range": [0.8, 1.2],  # Added brightness variation
+        "fill_mode": "nearest"
+    },
+    
+    # Transfer Learning
+    "base_model": "MobileNetV2",  # Can change to ResNet50 for better accuracy
+    "unfreeze_layers": 50,  # Increased from 30 - more layers trainable
+    "dropout_rate": 0.3,  # Reduced from 0.5 for better learning
 }
 
 # Lifecycle Prediction Configuration
