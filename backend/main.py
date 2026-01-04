@@ -2360,27 +2360,36 @@ async def upload_spare_part_image(
         
         # Upload to storage
         try:
-            # Check if we should use Spaces
-            if USE_SPACES:
-                from spaces_utils import upload_to_spaces
+            # Upload to Spaces if configured, otherwise save locally
+            if spaces_configured:
+                from spaces_utils import upload_file_to_spaces
+                from io import BytesIO
                 logger.info("🚀 Uploading to Digital Ocean Spaces...")
                 
-                image_url = await upload_to_spaces(
-                    image_data,
+                image_io = BytesIO(image_data)
+                image_url = upload_file_to_spaces(
+                    image_io,
                     unique_filename,
-                    content_type=image.content_type
+                    content_type=image.content_type or 'image/jpeg',
+                    folder="spare-parts"
                 )
+                
+                if not image_url:
+                    raise HTTPException(status_code=500, detail="Failed to upload to storage")
+                    
                 logger.info(f"✅ Image uploaded to Spaces: {image_url}")
             else:
                 # Save locally
                 logger.info("💾 Saving image locally...")
-                os.makedirs(UPLOAD_DIR, exist_ok=True)
-                file_path = os.path.join(UPLOAD_DIR, unique_filename)
+                upload_dir = Path("uploads/spare-parts")
+                upload_dir.mkdir(parents=True, exist_ok=True)
+                file_path = upload_dir / unique_filename
                 
                 with open(file_path, 'wb') as f:
                     f.write(image_data)
                 
-                image_url = f"{BASE_URL}/uploads/{unique_filename}"
+                base_url = os.getenv("BASE_URL", "http://localhost:8000")
+                image_url = f"{base_url}/uploads/spare-parts/{unique_filename}"
                 logger.info(f"✅ Image saved locally: {image_url}")
         
         except Exception as e:
