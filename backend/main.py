@@ -999,6 +999,8 @@ async def predict_lifecycle(
             },
             "prediction": {
                 "remaining_life": f"{remaining_days} Days ({remaining} hours)",
+                "remaining_life_hours": int(remaining),  # Add integer value for mobile app
+                "estimated_life_hours": int(fresh_life),  # Add estimated life for mobile app
                 "status": status,
                 "color_code": color_code
             },
