@@ -71,7 +71,7 @@ except ImportError:
 # --- JWT Configuration ---
 SECRET_KEY = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
+ACCESS_TOKEN_EXPIRE_MINUTES = 43200  # 30 days (30 * 24 * 60 minutes)
 
 # --- Password Hashing ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -2329,11 +2329,9 @@ def update_seller_password(
 
 @app.post("/api/spare-parts/upload-image")
 async def upload_spare_part_image(
-    image: UploadFile = File(...),
-    current_user_data: dict = Depends(get_current_user_or_seller),
-    db: Session = Depends(get_db)
+    image: UploadFile = File(...)
 ):
-    """Upload an image for spare part request"""
+    """Upload an image for spare part request (no auth required)"""
     try:
         logger.info(f"📸 Uploading spare part image: {image.filename}")
         
