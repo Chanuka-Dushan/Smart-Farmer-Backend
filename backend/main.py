@@ -665,9 +665,9 @@ WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 if not WEATHER_API_KEY:
     logger.warning("⚠️ WEATHER_API_KEY not set - weather forecasting will be disabled")
 
-# --- Vision Model Configuration ---
+# --- Vision# Model Configuration
 MODEL_VERSION = os.getenv("MODEL_VERSION", "v1.0")
-MODEL_PATH = os.getenv("MODEL_PATH", f"models/smart_farmer_vision_{MODEL_VERSION}.h5")
+MODEL_PATH = os.getenv("MODEL_PATH", "smart_farmer_vision_v1.h5")  # Fixed: removed models/ prefix
 MIN_PREDICTION_CONFIDENCE = float(os.getenv("MIN_PREDICTION_CONFIDENCE", "0.7"))
 
 # Check if we should disable TensorFlow in production (for performance)
