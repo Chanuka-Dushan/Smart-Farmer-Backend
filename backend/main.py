@@ -1413,6 +1413,8 @@ def login_seller(login_data: UserLogin, db: Session = Depends(get_db)):
         seller.fcm_token = login_data.fcm_token
         db.commit()
     
+    logger.info(f"Seller {seller.id} logged in - Logo URL: {seller.logo_url}")
+    
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -1974,6 +1976,8 @@ def login_app_user(login_data: UserLogin, db: Session = Depends(get_db)):
     if login_data.fcm_token:
         user.fcm_token = login_data.fcm_token
         db.commit()
+    
+    logger.info(f"User {user.id} logged in - Profile picture: {user.profile_picture_url}")
     
     return {
         "access_token": access_token,
