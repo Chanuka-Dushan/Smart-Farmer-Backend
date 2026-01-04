@@ -21,6 +21,7 @@ class UserLoginRequest(BaseModel):
     """Request model for user login"""
     email: EmailStr
     password: str
+    fcm_token: Optional[str] = None
 
 class SocialLoginRequest(BaseModel):
     """Request model for social login"""
