@@ -1375,6 +1375,7 @@ def register_seller(seller_data: SellerRegister, db: Session = Depends(get_db)):
             "phone_number": new_seller.phone_number,
             "business_address": new_seller.business_address,
             "business_description": new_seller.business_description,
+            "logo_url": new_seller.logo_url,
             "latitude": new_seller.latitude,
             "longitude": new_seller.longitude,
             "shop_location_name": new_seller.shop_location_name,
@@ -1407,6 +1408,11 @@ def login_seller(login_data: UserLogin, db: Session = Depends(get_db)):
         expires_delta=access_token_expires
     )
     
+    # Update FCM token if provided
+    if login_data.fcm_token:
+        seller.fcm_token = login_data.fcm_token
+        db.commit()
+    
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -1415,7 +1421,17 @@ def login_seller(login_data: UserLogin, db: Session = Depends(get_db)):
             "email": seller.email,
             "business_name": seller.business_name,
             "owner_firstname": seller.owner_firstname,
-            "owner_lastname": seller.owner_lastname
+            "owner_lastname": seller.owner_lastname,
+            "phone_number": seller.phone_number,
+            "business_address": seller.business_address,
+            "business_description": seller.business_description,
+            "logo_url": seller.logo_url,
+            "latitude": seller.latitude,
+            "longitude": seller.longitude,
+            "shop_location_name": seller.shop_location_name,
+            "is_verified": seller.is_verified,
+            "is_active": seller.is_active,
+            "onboarding_completed": seller.onboarding_completed
         }
     }
 
@@ -1915,7 +1931,13 @@ def register_app_user(user_data: AppUserRegister, db: Session = Depends(get_db))
             "id": new_user.id,
             "email": new_user.email,
             "firstname": new_user.firstname,
-            "lastname": new_user.lastname
+            "lastname": new_user.lastname,
+            "phone_number": new_user.phone_number,
+            "address": new_user.address,
+            "profile_picture_url": new_user.profile_picture_url,
+            "is_social_login": new_user.is_social_login,
+            "is_banned": new_user.is_banned,
+            "is_deleted": new_user.is_deleted
         }
     }
 
@@ -1948,6 +1970,11 @@ def login_app_user(login_data: UserLogin, db: Session = Depends(get_db)):
         expires_delta=access_token_expires
     )
     
+    # Update FCM token if provided
+    if login_data.fcm_token:
+        user.fcm_token = login_data.fcm_token
+        db.commit()
+    
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -1955,7 +1982,13 @@ def login_app_user(login_data: UserLogin, db: Session = Depends(get_db)):
             "id": user.id,
             "email": user.email,
             "firstname": user.firstname,
-            "lastname": user.lastname
+            "lastname": user.lastname,
+            "phone_number": user.phone_number,
+            "address": user.address,
+            "profile_picture_url": user.profile_picture_url,
+            "is_social_login": user.is_social_login,
+            "is_banned": user.is_banned,
+            "is_deleted": user.is_deleted
         }
     }
 
