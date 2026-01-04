@@ -2334,10 +2334,18 @@ async def upload_spare_part_image(
     """Upload an image for spare part request (no auth required)"""
     try:
         logger.info(f"📸 Uploading spare part image: {image.filename}")
+        logger.info(f"📄 Content type: {image.content_type}")
         
-        # Validate file type
-        if not image.content_type.startswith('image/'):
+        # Validate file type - check both content_type and file extension
+        valid_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
+        is_valid_content = image.content_type and image.content_type.startswith('image/')
+        is_valid_extension = any(image.filename.lower().endswith(ext) for ext in valid_extensions)
+        
+        if not is_valid_content and not is_valid_extension:
             raise HTTPException(status_code=400, detail="Only image files are allowed")
+        
+        if not is_valid_content:
+            logger.warning(f"⚠️ Content type not image/* but extension is valid: {image.filename}")
         
         # Validate file size (max 10MB)
         MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
