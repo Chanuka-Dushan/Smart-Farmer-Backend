@@ -682,6 +682,49 @@ DISABLE_TENSORFLOW = (
 
 print(f"🔧 TensorFlow disabled: {DISABLE_TENSORFLOW}")
 
+def download_model_from_spaces():
+    """Download ML model from DigitalOcean Spaces if not present locally"""
+    import requests
+    from pathlib import Path
+    
+    # Check if model already exists
+    if Path(MODEL_PATH).exists():
+        logger.info(f"✓ Model already exists locally: {MODEL_PATH}")
+        return True
+    
+    # Check if MODEL_URL is set
+    model_url = os.getenv("MODEL_URL")
+    if not model_url:
+        logger.warning("⚠️ MODEL_URL not set - cannot download model from Spaces")
+        return False
+    
+    try:
+        logger.info(f"📥 Downloading model from Spaces: {model_url}")
+        
+        # Create models directory if needed
+        Path(MODEL_PATH).parent.mkdir(parents=True, exist_ok=True)
+        
+        # Download model
+        response = requests.get(model_url, timeout=60)
+        response.raise_for_status()
+        
+        # Save model
+        with open(MODEL_PATH, 'wb') as f:
+            f.write(response.content)
+        
+        file_size = Path(MODEL_PATH).stat().st_size / 1024 / 1024
+        logger.info(f"✅ Model downloaded successfully ({file_size:.2f} MB)")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to download model: {e}")
+        return False
+
+# Try to download model from Spaces if not present
+if not DISABLE_TENSORFLOW and tensorflow_available:
+    download_model_from_spaces()
+
+# Load Vision Model
 cnn_model = None
 if tensorflow_available and not DISABLE_TENSORFLOW:
     try:
@@ -690,7 +733,7 @@ if tensorflow_available and not DISABLE_TENSORFLOW:
         os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN optimizations that cause warnings
 
         cnn_model = tf.keras.models.load_model(MODEL_PATH)
-        print(f"✅ Vision Model Loaded: {MODEL_PATH}")
+        logger.info(f"✓ Vision Model Loaded: {MODEL_PATH}")
     except Exception as e:
         cnn_model = None
         print(f"⚠️ Vision Model Not Found ({e}). Using Simulation Mode.")
