@@ -1495,7 +1495,7 @@ async def update_seller_location(
 async def get_seller_locations(
     db: Session = Depends(get_db)
 ):
-    """Get all verified and active seller locations for map display"""
+    """Get all active seller locations for map display (verified or not)"""
     # Debug logging
     total_sellers = db.query(Seller).count()
     active_sellers = db.query(Seller).filter(Seller.is_active == True).count()
@@ -1507,16 +1507,16 @@ async def get_seller_locations(
     
     logger.info(f"📊 Seller Stats: Total={total_sellers}, Active={active_sellers}, Verified={verified_sellers}, WithCoords={with_coords}")
     
+    # Show ALL active sellers with coordinates (regardless of verification status)
     sellers = db.query(Seller).filter(
         Seller.is_active == True,
-        Seller.is_verified == True,
         Seller.latitude.isnot(None),
         Seller.longitude.isnot(None)
     ).all()
     
     logger.info(f"📍 Returning {len(sellers)} seller locations")
     if len(sellers) == 0:
-        logger.warning("⚠️ No sellers found! Check: is_active=True, is_verified=True, latitude!=NULL, longitude!=NULL")
+        logger.warning("⚠️ No sellers found! Check: is_active=True, latitude!=NULL, longitude!=NULL")
         # List first 5 sellers with details for debugging
         all_sellers = db.query(Seller).limit(5).all()
         for s in all_sellers:
