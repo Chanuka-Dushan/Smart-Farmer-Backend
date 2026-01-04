@@ -1496,6 +1496,17 @@ async def get_seller_locations(
     db: Session = Depends(get_db)
 ):
     """Get all verified and active seller locations for map display"""
+    # Debug logging
+    total_sellers = db.query(Seller).count()
+    active_sellers = db.query(Seller).filter(Seller.is_active == True).count()
+    verified_sellers = db.query(Seller).filter(Seller.is_verified == True).count()
+    with_coords = db.query(Seller).filter(
+        Seller.latitude.isnot(None),
+        Seller.longitude.isnot(None)
+    ).count()
+    
+    logger.info(f"📊 Seller Stats: Total={total_sellers}, Active={active_sellers}, Verified={verified_sellers}, WithCoords={with_coords}")
+    
     sellers = db.query(Seller).filter(
         Seller.is_active == True,
         Seller.is_verified == True,
@@ -1503,7 +1514,15 @@ async def get_seller_locations(
         Seller.longitude.isnot(None)
     ).all()
     
-    return [
+    logger.info(f"📍 Returning {len(sellers)} seller locations")
+    if len(sellers) == 0:
+        logger.warning("⚠️ No sellers found! Check: is_active=True, is_verified=True, latitude!=NULL, longitude!=NULL")
+        # List first 5 sellers with details for debugging
+        all_sellers = db.query(Seller).limit(5).all()
+        for s in all_sellers:
+            logger.info(f"  Seller: {s.business_name} | Active={s.is_active} | Verified={s.is_verified} | Coords=({s.latitude},{s.longitude})")
+    
+    result = [
         {
             "id": seller.id,
             "business_name": seller.business_name,
@@ -1516,6 +1535,9 @@ async def get_seller_locations(
         }
         for seller in sellers
     ]
+    
+    logger.info(f"✅ Returning {len(result)} locations")
+    return result
 
 # ============= NOTIFICATION ENDPOINTS =============
 
