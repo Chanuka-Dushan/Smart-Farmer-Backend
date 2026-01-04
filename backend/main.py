@@ -661,13 +661,14 @@ except ImportError as e:
     print(f"⚠ AI Knowledge not available: {e}")
 
 # --- Weather API Configuration ---
-WEATHER_API_KEY = "d304e6f2db12ee21033d9aa1213a508f"
+WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
+if not WEATHER_API_KEY:
+    logger.warning("⚠️ WEATHER_API_KEY not set - weather forecasting will be disabled")
 
 # --- Vision Model Configuration ---
-# To disable TensorFlow in production (recommended for Heroku/similar platforms):
-# Set environment variable: DISABLE_TENSORFLOW=true
-# This prevents worker timeouts and improves startup performance
-MODEL_PATH = "smart_farmer_vision_v1.h5"
+MODEL_VERSION = os.getenv("MODEL_VERSION", "v1.0")
+MODEL_PATH = os.getenv("MODEL_PATH", f"models/smart_farmer_vision_{MODEL_VERSION}.h5")
+MIN_PREDICTION_CONFIDENCE = float(os.getenv("MIN_PREDICTION_CONFIDENCE", "0.7"))
 
 # Check if we should disable TensorFlow in production (for performance)
 # Only disable if explicitly set via environment variable
@@ -769,39 +770,111 @@ async def predict_lifecycle(
     location: str = Form(...),
     image: UploadFile = File(...) 
 ):
+    """
+    Predict remaining lifecycle of a tractor part
+    
+    Args:
+        part_name: Name of the part (e.g., "battery", "fan belt")
+        usage_hours: Hours the part has been used
+        location: Geographic location (affects environmental stress)
+        image: Image of the part for visual damage assessment
+    
+    Returns:
+        JSON with prediction results including remaining life, status, and analysis
+    """
+    prediction_start_time = datetime.now(timezone.utc)
+    
     try:
-        print(f"\n--- 📥 NEW REQUEST: {part_name} | Hours: {usage_hours} | Location: {location} ---")
-        print(f"📸 Image received: {image.filename} ({image.content_type})")
+        logger.info(f"📥 NEW REQUEST: {part_name} | Hours: {usage_hours} | Location: {location}")
+        logger.info(f"📸 Image: {image.filename} ({image.content_type})")
+
+        # Import ML utilities
+        try:
+            from ml_utils import ImagePreprocessor, PredictionValidator, clip_prediction
+            from config import MIN_PREDICTION_CONFIDENCE
+        except ImportError as e:
+            logger.error(f"Failed to import ML utilities: {e}")
+            raise HTTPException(status_code=500, detail="ML utilities not available")
+
+        # Initialize validators
+        image_preprocessor = ImagePreprocessor(target_size=(224, 224))
+        prediction_validator = PredictionValidator(min_confidence=MIN_PREDICTION_CONFIDENCE)
 
         # A. GET FRESH LIFESPAN (From AI Knowledge / Gemini)
         if ai_available:
             fresh_life = ai_knowledge.get_standard_lifespan(part_name)
-            print(f"🤖 AI Knowledge: Available - Lifespan: {fresh_life} hours")
+            logger.info(f"🤖 AI Knowledge: Available - Lifespan: {fresh_life} hours")
         else:
             fresh_life = 500  # Default fallback
-            print(f"⚠️ AI Knowledge: Not available - Using fallback: {fresh_life} hours")
+            logger.warning(f"⚠️ AI Knowledge: Not available - Using fallback: {fresh_life} hours")
 
         # B. ANALYZE VISUAL DAMAGE (From .h5 Model)
         visual_damage = 0.0
+        confidence = 0.0
+        analysis_model = "Simulation Mode"
+        
+        # Read and validate image
+        img_data = await image.read()
+        logger.info(f"🖼️ Image data received: {len(img_data)} bytes")
+        
+        # Validate image
+        is_valid_image, validation_message = image_preprocessor.validate_image(img_data)
+        if not is_valid_image:
+            logger.warning(f"⚠️ Image validation failed: {validation_message}")
+            raise HTTPException(status_code=400, detail=f"Invalid image: {validation_message}")
+        
         if cnn_model and tensorflow_available:
-            # Preprocess Image
-            img_data = await image.read()
-            print(f"🖼️ Image data received: {len(img_data)} bytes")
-            img = Image.open(BytesIO(img_data)).convert('RGB')
-            img = img.resize((224, 224))
-            img_array = np.array(img) / 255.0
-            img_array = np.expand_dims(img_array, axis=0)
-            
-            # Predict
-            prediction = cnn_model.predict(img_array)
-            visual_damage = float(prediction[0][0])
-            print(f"👁️ Vision Model: Detected {int(visual_damage * 100)}% Physical Damage")
+            try:
+                # Preprocess image
+                img_array = image_preprocessor.preprocess_image(img_data)
+                if img_array is None:
+                    raise ValueError("Image preprocessing failed")
+                
+                # Predict
+                prediction = cnn_model.predict(img_array, verbose=0)
+                raw_prediction = float(prediction[0][0])
+                
+                # Clip to valid range
+                visual_damage = clip_prediction(raw_prediction, 0.0, 1.0)
+                
+                # Calculate confidence
+                confidence = prediction_validator.calculate_confidence(visual_damage)
+                
+                # Validate prediction
+                is_valid, validation_msg = prediction_validator.validate_prediction(
+                    visual_damage, 
+                    confidence
+                )
+                
+                if not is_valid:
+                    logger.warning(f"⚠️ Prediction validation warning: {validation_msg}")
+                    # Continue but flag for review
+                
+                analysis_model = f"MobileNetV2 (Transfer Learning) - Confidence: {confidence:.2%}"
+                logger.info(f"👁️ Vision Model: {int(visual_damage * 100)}% Damage (Confidence: {confidence:.2%})")
+                
+                # Log prediction for monitoring
+                prediction_validator.log_prediction({
+                    "part_name": part_name,
+                    "prediction": visual_damage,
+                    "confidence": confidence,
+                    "raw_prediction": raw_prediction,
+                    "location": location
+                })
+                
+            except Exception as e:
+                logger.error(f"❌ Vision model prediction failed: {e}")
+                # Fall back to simulation
+                visual_damage = 0.35
+                confidence = 0.5
+                analysis_model = "Simulation Mode (Model Error)"
+                logger.warning("⚠️ Using simulation mode due to model error")
         else:
             # Fallback if TensorFlow not available or model not loaded
-            print("⚠️ Vision analysis unavailable. Using simulation mode.")
+            logger.info("⚠️ Vision analysis unavailable. Using simulation mode.")
             visual_damage = 0.35
-            print("⚠️ Simulation: Simulating 35% Visual Damage")
-            visual_damage = 0.35
+            confidence = 0.5
+            analysis_model = "Simulation Mode"
 
         # C. ANALYZE TIME (Historical + Future)
         # 1. Past Stress
@@ -818,13 +891,16 @@ async def predict_lifecycle(
         
         # BONUS: If part is in good condition (< 20% damage), extend life by up to 50%
         # This accounts for well-maintained parts lasting longer than rated life
+        condition_bonus_applied = 0.0
         if visual_damage < 0.20:  # Less than 20% damage
             condition_bonus = (0.20 - visual_damage) / 0.20 * 0.50  # Up to 50% bonus
             effective_capacity *= (1.0 + condition_bonus)
-            print(f"✨ Condition Bonus: +{int(condition_bonus * 100)}% life extension")
+            condition_bonus_applied = condition_bonus
+            logger.info(f"✨ Condition Bonus: +{int(condition_bonus * 100)}% life extension")
         
         # 2. Calculate Real Usage (Inflated by Historical Stress)
         real_usage_impact = usage_hours * hist_stress
+        
         # 3. Remaining Life
         remaining = effective_capacity - real_usage_impact
         remaining = max(0, int(remaining))  # No negative numbers
@@ -849,31 +925,57 @@ async def predict_lifecycle(
         result = {
             "part_name": part_name,
             "ai_knowledge": {
-                "fresh_lifespan": f"{fresh_life} Hours"
+                "fresh_lifespan": f"{fresh_life} Hours",
+                "source": "Gemini AI" if ai_available else "Simulation"
             },
             "visual_scan": {
                 "wear_detected": f"{int(visual_damage * 100)}%",
-                "analysis_model": "MobileNetV2 (Transfer Learning)"
+                "confidence": f"{int(confidence * 100)}%",
+                "analysis_model": analysis_model
             },
             "environment": {
                 "location": location,
                 "historical_stress": f"{hist_reason} (Load: {hist_stress}x)",
                 "future_forecast": future_msg
             },
+            "calculation": {
+                "effective_capacity": f"{int(effective_capacity)} Hours",
+                "condition_bonus": f"+{int(condition_bonus_applied * 100)}%",
+                "real_usage_impact": f"{int(real_usage_impact)} Hours"
+            },
             "prediction": {
                 "remaining_life": f"{remaining} Hours",
                 "status": status,
                 "color_code": color_code
+            },
+            "metadata": {
+                "model_version": MODEL_VERSION,
+                "prediction_time": datetime.now(timezone.utc).isoformat(),
+                "processing_time_ms": int((datetime.now(timezone.utc) - prediction_start_time).total_seconds() * 1000)
             }
         }
 
-        print(f"✅ Sending Result: {status} | Remaining: {remaining} Hours")
-        logger.info(f"📤 API Response: Status={status}, Remaining={remaining} Hours, Location={location}")
+        logger.info(f"✅ Prediction Complete: {status} | Remaining: {remaining} Hours | Time: {result['metadata']['processing_time_ms']}ms")
+        
+        # Log to database if enabled
+        if os.getenv("ENABLE_PREDICTION_LOGGING", "true").lower() == "true":
+            try:
+                # TODO: Save to database for monitoring and analysis
+                pass
+            except Exception as e:
+                logger.error(f"Failed to log prediction: {e}")
+        
         return result
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
-        logger.error(f"❌ Lifecycle Prediction Error: {str(e)} | Part: {part_name} | Location: {location}")
-        print(f"❌ Error in lifecycle prediction: {e}")
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+        logger.error(f"❌ Lifecycle Prediction Error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Prediction failed: {str(e)}"
+        )
 if not spaces_configured:
     logger.warning("⚠ Spaces not configured - uploads will fail")
     # Keep local directories for fallback
