@@ -188,10 +188,30 @@ class SparePartOffer(Base):
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
+class Part(Base):
+    """Spare Part Master Model (Phase 1 – Data Foundation)"""
+    __tablename__ = "parts"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    name = Column(String(255), nullable=False)
+    brand = Column(String(255), nullable=False)
+    description = Column(String(255), nullable=False)
+
+    diameter = Column(Float, nullable=True)
+    material = Column(String(255), nullable=True)
+
+    price = Column(Float, nullable=False)
+    lifespan = Column(Integer, nullable=True)  # lifespan in hours / months
+
+
 # Create the tables automatically
 Base.metadata.create_all(bind=engine)
 
 # --- 3. Pydantic Models (Input Validation) ---
+
+from pydantic import BaseModel
+from typing import Optional
 class UserRegister(BaseModel):
     name: str
     email: str
@@ -409,6 +429,49 @@ class NotificationResponse(BaseModel):
     is_sent: bool
     sent_at: Optional[str]
     created_at: str
+
+    class Config:
+        from_attributes = True
+
+        # Parts Models - compatibility
+
+class PartCreate(BaseModel):
+    name: str
+    brand: str
+    description: str
+    category: str
+    diameter: Optional[float] = None
+    material: Optional[str] = None
+    price: float
+    lifespan: Optional[int] = None
+
+
+class PartResponse(BaseModel):
+    id: int
+    name: str
+    brand: str
+    description: str
+    category: str
+    diameter: Optional[float]
+    material: Optional[str]
+    price: float
+    lifespan: Optional[int]
+
+    class Config:
+        orm_mode = True
+
+
+class PartUpdate(BaseModel):
+    name: Optional[str] = None
+    brand: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    diameter: Optional[float] = None
+    material: Optional[str] = None
+    price: Optional[float] = None
+    lifespan: Optional[int] = None
+
+
 
     class Config:
         from_attributes = True
@@ -2503,6 +2566,82 @@ async def get_my_offers(
         result.append(offer_dict)
     
     return result
+
+# ============= PART MANAGEMENT ENDPOINTS =============
+
+@app.post("/api/parts", response_model=PartResponse, status_code=201)
+def create_part(
+    part_data: PartCreate,
+    db: Session = Depends(get_db),
+    current_admin: dict = Depends(get_current_user)  # Admin only
+):
+    """Create a new spare part (Admin only)"""
+    new_part = Part(
+        name=part_data.name,
+        brand=part_data.brand,
+        description=part_data.description,
+        category=part_data.category,
+        diameter=part_data.diameter,
+        material=part_data.material,
+        price=part_data.price,
+        lifespan=part_data.lifespan
+    )
+
+    db.add(new_part)
+    db.commit()
+    db.refresh(new_part)
+    return new_part
+
+
+@app.get("/api/parts", response_model=list[PartResponse])
+def get_all_parts(db: Session = Depends(get_db)):
+    """Get all spare parts"""
+    return db.query(Part).all()
+
+
+@app.get("/api/parts/{part_id}", response_model=PartResponse)
+def get_part_by_id(part_id: int, db: Session = Depends(get_db)):
+    """Get spare part by ID"""
+    part = db.query(Part).filter(Part.id == part_id).first()
+    if not part:
+        raise HTTPException(status_code=404, detail="Part not found")
+    return part
+
+@app.put("/api/parts/{part_id}", response_model=PartResponse)
+def update_part(
+    part_id: int,
+    part_data: PartUpdate,
+    db: Session = Depends(get_db),
+    current_admin: dict = Depends(get_current_user)
+):
+    """Update a spare part (Admin only)"""
+    part = db.query(Part).filter(Part.id == part_id).first()
+    if not part:
+        raise HTTPException(status_code=404, detail="Part not found")
+
+    for field, value in part_data.dict(exclude_unset=True).items():
+        setattr(part, field, value)
+
+    db.commit()
+    db.refresh(part)
+    return part
+
+
+@app.delete("/api/parts/{part_id}", response_model=MessageResponse)
+def delete_part(
+    part_id: int,
+    db: Session = Depends(get_db),
+    current_admin: dict = Depends(get_current_user)
+):
+    """Delete a spare part (Admin only)"""
+    part = db.query(Part).filter(Part.id == part_id).first()
+    if not part:
+        raise HTTPException(status_code=404, detail="Part not found")
+
+    db.delete(part)
+    db.commit()
+    return MessageResponse(message="Part deleted successfully")
+
 
 
 # ============= ADMIN USER MANAGEMENT ENDPOINTS =============
