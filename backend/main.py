@@ -197,12 +197,15 @@ class Part(Base):
     name = Column(String(255), nullable=False)
     brand = Column(String(255), nullable=False)
     description = Column(String(255), nullable=False)
+    category = Column(String(200),nullable=False)
 
     diameter = Column(Float, nullable=True)
     material = Column(String(255), nullable=True)
 
     price = Column(Float, nullable=False)
-    lifespan = Column(Integer, nullable=True)  # lifespan in hours / months
+    lifespan = Column(Integer, nullable=True) # lifespan in hours / months
+    image_url = Column(String(500), nullable=True)
+
 
 
 # Create the tables automatically
@@ -444,6 +447,7 @@ class PartCreate(BaseModel):
     material: Optional[str] = None
     price: float
     lifespan: Optional[int] = None
+    image_url: Optional[str] = None
 
 
 class PartResponse(BaseModel):
@@ -456,6 +460,7 @@ class PartResponse(BaseModel):
     material: Optional[str]
     price: float
     lifespan: Optional[int]
+    image_url: Optional[str] = None
 
     class Config:
         orm_mode = True
@@ -470,6 +475,7 @@ class PartUpdate(BaseModel):
     material: Optional[str] = None
     price: Optional[float] = None
     lifespan: Optional[int] = None
+    image_url: Optional[str] = None
 
 
 
@@ -2584,7 +2590,8 @@ def create_part(
         diameter=part_data.diameter,
         material=part_data.material,
         price=part_data.price,
-        lifespan=part_data.lifespan
+        lifespan=part_data.lifespan,
+        image_url=part_data.image_url
     )
 
     db.add(new_part)
