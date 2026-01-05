@@ -14,7 +14,8 @@ import {
   X,
   LogOut,
   Store,
-  Bell
+  Bell,
+  CreditCard
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useState } from "react"
@@ -22,10 +23,11 @@ import { ThemeToggle } from "@/components/theme-toggle"
 import { useAuth } from "@/context/AuthContext"
 
 const navigation = [
-  { name: "Dashboard", href: "/", icon: LayoutDashboard },
+  { name: "Dashboard", href: "/admin", icon: LayoutDashboard },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
-  { name: "Users", href: "/users", icon: Users },
+  { name: "Users", href: "/admin/users", icon: Users },
   { name: "Sellers", href: "/sellers", icon: Store },
+  { name: "Transactions", href: "/admin/transactions", icon: CreditCard },
   { name: "Notifications", href: "/notifications", icon: Bell },
   { name: "Spare Parts", href: "/products", icon: Package },
   { name: "Orders", href: "/orders", icon: ShoppingCart },

@@ -39,6 +39,23 @@ logger = logging.getLogger(__name__)
 # Load environment variables from .env file
 load_dotenv()
 
+# Initialize Stripe
+try:
+    import stripe
+    STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+    STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY")
+    if STRIPE_SECRET_KEY:
+        stripe.api_key = STRIPE_SECRET_KEY
+        stripe_configured = True
+        print("✓ Stripe configured")
+    else:
+        stripe_configured = False
+        print("⚠ Stripe not configured - check STRIPE_SECRET_KEY")
+except ImportError:
+    stripe_configured = False
+    print("⚠ Stripe library not available")
+    stripe = None
+
 # Initialize DigitalOcean Spaces
 try:
     from spaces_utils import (
@@ -186,6 +203,23 @@ class SparePartOffer(Base):
     price = Column(Float, nullable=False)
     description = Column(Text, nullable=False)
     status = Column(String(50), default="pending")  # pending, accepted, rejected
+    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+
+class Payment(Base):
+    """Payment Model for Spare Part Orders"""
+    __tablename__ = "payments"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    offer_id = Column(Integer, nullable=False)  # FK to spare_part_offers
+    user_id = Column(Integer, nullable=False)  # FK to app_users
+    seller_id = Column(Integer, nullable=False)  # FK to sellers
+    amount = Column(Float, nullable=False)  # Payment amount (5% of offer price)
+    total_amount = Column(Float, nullable=False)  # Total offer amount
+    stripe_payment_intent_id = Column(String(255), nullable=True)  # Stripe payment intent ID
+    stripe_charge_id = Column(String(255), nullable=True)  # Stripe charge ID
+    status = Column(String(50), default="pending")  # pending, completed, failed, refunded
+    payment_method = Column(String(50), default="stripe")  # stripe, etc.
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -370,6 +404,33 @@ class SparePartOfferResponse(BaseModel):
     price: float
     description: str
     status: str
+
+# Payment Models
+class PaymentIntentCreate(BaseModel):
+    offer_id: int
+
+class PaymentConfirm(BaseModel):
+    payment_intent_id: str
+
+class PaymentResponse(BaseModel):
+    id: int
+    offer_id: int
+    user_id: int
+    seller_id: int
+    amount: float
+    total_amount: float
+    stripe_payment_intent_id: Optional[str]
+    stripe_charge_id: Optional[str]
+    status: str
+    payment_method: str
+    created_at: str
+    updated_at: str
+    offer: Optional[dict] = None
+    user: Optional[dict] = None
+    seller: Optional[dict] = None
+
+    class Config:
+        from_attributes = True
     created_at: str
     seller: Optional[dict] = None
     request: Optional[dict] = None  # Add request info
@@ -1666,15 +1727,15 @@ async def send_notification_endpoint(
                 total_count = len(all_tokens)
                 
                 if all_tokens:
-                    multicast_success, multicast_result = send_multicast_notification(
+                    multicast_result = send_multicast_notification(
                         fcm_tokens=all_tokens,
                         title=notification_data.title,
                         body=notification_data.message,
                         data={'type': 'admin_broadcast', 'notification_id': str(new_notification.id)}
                     )
                     
-                    if multicast_success:
-                        success_count = multicast_result.get('total_success', 0)
+                    if multicast_result.get('success', False):
+                        success_count = multicast_result.get('successful', 0)
                     else:
                         error_details.append(f"Multicast error: {multicast_result.get('error', 'Unknown error')}")
                         
@@ -1717,15 +1778,15 @@ async def send_notification_endpoint(
                         user_tokens = [user.fcm_token for user in app_users]
                         total_count = len(user_tokens)
                         
-                        multicast_success, multicast_result = send_multicast_notification(
+                        multicast_result = send_multicast_notification(
                             fcm_tokens=user_tokens,
                             title=notification_data.title,
                             body=notification_data.message,
                             data={'type': 'admin_broadcast', 'notification_id': str(new_notification.id)}
                         )
                         
-                        if multicast_success:
-                            success_count = multicast_result.get('total_success', 0)
+                        if multicast_result.get('success', False):
+                            success_count = multicast_result.get('successful', 0)
                         else:
                             error_details.append(f"Multicast error: {multicast_result.get('error', 'Unknown error')}")
                             
@@ -1766,15 +1827,15 @@ async def send_notification_endpoint(
                         seller_tokens = [seller.fcm_token for seller in sellers]
                         total_count = len(seller_tokens)
                         
-                        multicast_success, multicast_result = send_multicast_notification(
+                        multicast_result = send_multicast_notification(
                             fcm_tokens=seller_tokens,
                             title=notification_data.title,
                             body=notification_data.message,
                             data={'type': 'admin_broadcast', 'notification_id': str(new_notification.id)}
                         )
                         
-                        if multicast_success:
-                            success_count = multicast_result.get('total_success', 0)
+                        if multicast_result.get('success', False):
+                            success_count = multicast_result.get('successful', 0)
                         else:
                             error_details.append(f"Multicast error: {multicast_result.get('error', 'Unknown error')}")
             
@@ -2755,10 +2816,26 @@ async def update_offer_status(
     offer.status = status_data.status
     offer.updated_at = datetime.now(timezone.utc).isoformat()
     
-    # If offer is accepted, mark the request as completed
+    # If offer is accepted, create a payment record (5% of offer price)
     if status_data.status == "accepted":
         request.status = "completed"
         request.updated_at = datetime.now(timezone.utc).isoformat()
+        
+        # Calculate 5% deposit
+        deposit_amount = offer.price * 0.05
+        
+        # Create payment record
+        payment = Payment(
+            offer_id=offer.id,
+            user_id=current_user.id,
+            seller_id=offer.seller_id,
+            amount=deposit_amount,
+            total_amount=offer.price,
+            status="pending"
+        )
+        db.add(payment)
+        db.commit()
+        db.refresh(payment)
     
     db.commit()
     
@@ -2805,6 +2882,238 @@ async def get_my_offers(
     
     return result
 
+
+# ============= PAYMENT ENDPOINTS =============
+
+@app.post("/api/payments/create-intent")
+async def create_payment_intent(
+    payment_data: PaymentIntentCreate,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Create a Stripe payment intent for 5% deposit"""
+    if not stripe_configured or stripe is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    # Get the offer
+    offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment_data.offer_id).first()
+    if not offer:
+        raise HTTPException(status_code=404, detail="Offer not found")
+    
+    # Verify the offer is accepted
+    if offer.status != "accepted":
+        raise HTTPException(status_code=400, detail="Offer must be accepted before payment")
+    
+    # Get or create payment record
+    payment = db.query(Payment).filter(Payment.offer_id == offer.id).first()
+    if not payment:
+        # Calculate 5% deposit
+        deposit_amount = offer.price * 0.05
+        payment = Payment(
+            offer_id=offer.id,
+            user_id=current_user.id,
+            seller_id=offer.seller_id,
+            amount=deposit_amount,
+            total_amount=offer.price,
+            status="pending"
+        )
+        db.add(payment)
+        db.commit()
+        db.refresh(payment)
+    
+    # Check if payment already completed
+    if payment.status == "completed":
+        raise HTTPException(status_code=400, detail="Payment already completed")
+    
+    try:
+        # Create Stripe payment intent (amount in cents)
+        intent = stripe.PaymentIntent.create(
+            amount=int(payment.amount * 100),  # Convert to cents
+            currency='usd',
+            metadata={
+                'payment_id': str(payment.id),
+                'offer_id': str(offer.id),
+                'user_id': str(current_user.id),
+                'seller_id': str(offer.seller_id)
+            }
+        )
+        
+        # Update payment record with intent ID
+        payment.stripe_payment_intent_id = intent.id
+        db.commit()
+        
+        return {
+            "client_secret": intent.client_secret,
+            "payment_intent_id": intent.id,
+            "amount": payment.amount,
+            "total_amount": payment.total_amount,
+            "payment_id": payment.id
+        }
+    except Exception as e:
+        logger.error(f"Stripe payment intent creation failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create payment intent: {str(e)}"
+        )
+
+@app.post("/api/payments/confirm")
+async def confirm_payment(
+    payment_data: PaymentConfirm,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Confirm payment completion"""
+    if not stripe_configured or stripe is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    try:
+        # Retrieve payment intent from Stripe
+        intent = stripe.PaymentIntent.retrieve(payment_data.payment_intent_id)
+        
+        # Find payment record
+        payment = db.query(Payment).filter(
+            Payment.stripe_payment_intent_id == payment_data.payment_intent_id
+        ).first()
+        
+        if not payment:
+            raise HTTPException(status_code=404, detail="Payment not found")
+        
+        # Verify payment belongs to current user
+        if payment.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        
+        # Check payment status
+        if intent.status == 'succeeded':
+            payment.status = "completed"
+            payment.stripe_charge_id = intent.latest_charge if hasattr(intent, 'latest_charge') else None
+            payment.updated_at = datetime.now(timezone.utc).isoformat()
+            db.commit()
+            
+            return {
+                "success": True,
+                "message": "Payment confirmed successfully",
+                "payment": {
+                    "id": payment.id,
+                    "amount": payment.amount,
+                    "status": payment.status
+                }
+            }
+        else:
+            payment.status = "failed"
+            payment.updated_at = datetime.now(timezone.utc).isoformat()
+            db.commit()
+            
+            raise HTTPException(
+                status_code=400,
+                detail=f"Payment not completed. Status: {intent.status}"
+            )
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Stripe error: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Payment confirmation failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to confirm payment: {str(e)}"
+        )
+
+@app.get("/api/payments/my-payments", response_model=list[PaymentResponse])
+async def get_my_payments(
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Get all payments for the current user"""
+    payments = db.query(Payment).filter(Payment.user_id == current_user.id).order_by(Payment.created_at.desc()).all()
+    
+    result = []
+    for payment in payments:
+        offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
+        seller = db.query(Seller).filter(Seller.id == payment.seller_id).first()
+        
+        payment_dict = {
+            "id": payment.id,
+            "offer_id": payment.offer_id,
+            "user_id": payment.user_id,
+            "seller_id": payment.seller_id,
+            "amount": payment.amount,
+            "total_amount": payment.total_amount,
+            "stripe_payment_intent_id": payment.stripe_payment_intent_id,
+            "stripe_charge_id": payment.stripe_charge_id,
+            "status": payment.status,
+            "payment_method": payment.payment_method,
+            "created_at": payment.created_at,
+            "updated_at": payment.updated_at,
+            "offer": {
+                "id": offer.id,
+                "price": offer.price,
+                "description": offer.description,
+                "status": offer.status
+            } if offer else None,
+            "seller": {
+                "id": seller.id,
+                "business_name": seller.business_name,
+                "owner_firstname": seller.owner_firstname,
+                "owner_lastname": seller.owner_lastname
+            } if seller else None
+        }
+        result.append(payment_dict)
+    
+    return result
+
+@app.get("/api/payments/seller-payments", response_model=list[PaymentResponse])
+async def get_seller_payments(
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Get all approved payments for the current seller"""
+    payments = db.query(Payment).filter(
+        Payment.seller_id == current_seller.id,
+        Payment.status == "completed"
+    ).order_by(Payment.created_at.desc()).all()
+    
+    result = []
+    for payment in payments:
+        offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
+        user = db.query(AppUser).filter(AppUser.id == payment.user_id).first()
+        
+        payment_dict = {
+            "id": payment.id,
+            "offer_id": payment.offer_id,
+            "user_id": payment.user_id,
+            "seller_id": payment.seller_id,
+            "amount": payment.amount,
+            "total_amount": payment.total_amount,
+            "stripe_payment_intent_id": payment.stripe_payment_intent_id,
+            "stripe_charge_id": payment.stripe_charge_id,
+            "status": payment.status,
+            "payment_method": payment.payment_method,
+            "created_at": payment.created_at,
+            "updated_at": payment.updated_at,
+            "offer": {
+                "id": offer.id,
+                "price": offer.price,
+                "description": offer.description,
+                "status": offer.status
+            } if offer else None,
+            "user": {
+                "id": user.id,
+                "firstname": user.firstname,
+                "lastname": user.lastname,
+                "email": user.email
+            } if user else None
+        }
+        result.append(payment_dict)
+    
+    return result
 
 # ============= ADMIN USER MANAGEMENT ENDPOINTS =============
 
@@ -2945,6 +3254,97 @@ async def get_user_stats(
         "active_users": active_users or 0,
         "banned_users": banned_users or 0,
         "deleted_users": deleted_users or 0
+    }
+
+@app.get("/admin/transactions")
+async def get_all_transactions(
+    skip: int = 0,
+    limit: int = 100,
+    status: Optional[str] = None,
+    current_admin: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all payment transactions (Admin only)"""
+    query = db.query(Payment)
+    
+    # Filter by status if provided
+    if status:
+        query = query.filter(Payment.status == status)
+    
+    # Get transactions with pagination
+    transactions = query.order_by(Payment.created_at.desc()).offset(skip).limit(limit).all()
+    
+    result = []
+    for payment in transactions:
+        offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
+        user = db.query(AppUser).filter(AppUser.id == payment.user_id).first()
+        seller = db.query(Seller).filter(Seller.id == payment.seller_id).first()
+        
+        transaction_dict = {
+            "id": payment.id,
+            "offer_id": payment.offer_id,
+            "user_id": payment.user_id,
+            "seller_id": payment.seller_id,
+            "amount": payment.amount,
+            "total_amount": payment.total_amount,
+            "stripe_payment_intent_id": payment.stripe_payment_intent_id,
+            "stripe_charge_id": payment.stripe_charge_id,
+            "status": payment.status,
+            "payment_method": payment.payment_method,
+            "created_at": payment.created_at,
+            "updated_at": payment.updated_at,
+            "offer": {
+                "id": offer.id,
+                "price": offer.price,
+                "description": offer.description,
+                "status": offer.status
+            } if offer else None,
+            "user": {
+                "id": user.id,
+                "firstname": user.firstname,
+                "lastname": user.lastname,
+                "email": user.email
+            } if user else None,
+            "seller": {
+                "id": seller.id,
+                "business_name": seller.business_name,
+                "owner_firstname": seller.owner_firstname,
+                "owner_lastname": seller.owner_lastname
+            } if seller else None
+        }
+        result.append(transaction_dict)
+    
+    return result
+
+@app.get("/admin/transactions/stats")
+async def get_transaction_stats(
+    current_admin: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get transaction statistics (Admin only)"""
+    from sqlalchemy import func
+    
+    total_transactions = db.query(func.count(Payment.id)).scalar()
+    completed_transactions = db.query(func.count(Payment.id)).filter(
+        Payment.status == "completed"
+    ).scalar()
+    pending_transactions = db.query(func.count(Payment.id)).filter(
+        Payment.status == "pending"
+    ).scalar()
+    failed_transactions = db.query(func.count(Payment.id)).filter(
+        Payment.status == "failed"
+    ).scalar()
+    
+    total_revenue = db.query(func.sum(Payment.amount)).filter(
+        Payment.status == "completed"
+    ).scalar() or 0.0
+    
+    return {
+        "total_transactions": total_transactions or 0,
+        "completed_transactions": completed_transactions or 0,
+        "pending_transactions": pending_transactions or 0,
+        "failed_transactions": failed_transactions or 0,
+        "total_revenue": float(total_revenue)
     }
 
 @app.get("/admin/users/{user_id}", response_model=AppUserResponse)
