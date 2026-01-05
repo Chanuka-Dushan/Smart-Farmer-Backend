@@ -44,17 +44,20 @@ try:
     import stripe
     STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
     STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY")
-    if STRIPE_SECRET_KEY:
-        stripe.api_key = STRIPE_SECRET_KEY
+
+    # More robust Stripe configuration check
+    if STRIPE_SECRET_KEY and STRIPE_SECRET_KEY.strip():
+        stripe.api_key = STRIPE_SECRET_KEY.strip()
         stripe_configured = True
-        print("✓ Stripe configured")
+        print("✓ Stripe configured successfully")
     else:
         stripe_configured = False
-        print("⚠ Stripe not configured - check STRIPE_SECRET_KEY")
+        stripe = None
+        print("⚠ Stripe not configured - STRIPE_SECRET_KEY is missing or empty")
 except ImportError:
     stripe_configured = False
-    print("⚠ Stripe library not available")
     stripe = None
+    print("⚠ Stripe library not available")
 
 # Initialize DigitalOcean Spaces
 try:
@@ -2734,10 +2737,18 @@ async def get_request_offers(
     
     offers = db.query(SparePartOffer).filter(SparePartOffer.request_id == request_id).all()
     
+    logger.info(f"Found {len(offers)} offers for request {request_id}")
+    
     # Add seller information to each offer
     result = []
     for offer in offers:
         seller = db.query(Seller).filter(Seller.id == offer.seller_id).first()
+        
+        if not seller:
+            logger.warning(f"Seller {offer.seller_id} not found for offer {offer.id}")
+        else:
+            logger.info(f"Loaded seller data for offer {offer.id}: {seller.business_name}")
+        
         offer_dict = {
             "id": offer.id,
             "request_id": offer.request_id,
@@ -2760,6 +2771,7 @@ async def get_request_offers(
         }
         result.append(offer_dict)
     
+    logger.info(f"Returning {len(result)} offers with seller data")
     return result
 
 @app.post("/api/spare-parts/requests/{request_id}/offers", response_model=SparePartOfferResponse, status_code=status.HTTP_201_CREATED)
