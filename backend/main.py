@@ -958,10 +958,12 @@ async def predict_lifecycle(
         status = "GOOD"
         color_code = "#008000"  # Green
 
-        if remaining < 100:
+        remaining_ratio = (remaining / fresh_life) if fresh_life else 0.0
+
+        if remaining < 100 or visual_damage >= 0.85 or remaining_ratio <= 0.10:
             status = "CRITICAL REPLACEMENT"
             color_code = "#FF0000"  # Red
-        elif remaining < 300:
+        elif remaining < 300 or visual_damage >= 0.65 or remaining_ratio <= 0.25:
             status = "WARNING"
             color_code = "#FFA500"  # Orange
         
