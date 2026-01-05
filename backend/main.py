@@ -703,12 +703,15 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
     except jwt.ExpiredSignatureError:
         logger.warning(f"Expired token from {request.client.host if request.client else 'unknown'}")
         raise HTTPException(status_code=401, detail="Token has expired")
-    except jwt.InvalidTokenError as e:
-        logger.warning(f"Invalid token error: {type(e).__name__} - {str(e)}")
+    except jwt.JWTError as e:
+        logger.warning(f"JWT error: {type(e).__name__} - {str(e)}")
         raise HTTPException(status_code=401, detail="Invalid or malformed token")
     except JWTError as e:
         logger.warning(f"JWT decode error: {type(e).__name__} - {str(e)}")
         raise HTTPException(status_code=401, detail="Token validation failed")
+    except Exception as e:
+        logger.warning(f"Unexpected token error: {type(e).__name__} - {str(e)}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
 
 # --- 5. API Endpoints ---
 app = FastAPI()
@@ -1625,28 +1628,24 @@ async def get_seller_locations(
 # ============= NOTIFICATION ENDPOINTS =============
 
 @app.get("/api/notifications/status")
-async def check_notification_status():
+async def check_notification_status(
+    current_admin: dict = Depends(get_current_user)
+):
     """Check Firebase Admin SDK initialization status"""
     try:
-        from fcm_utils import initialize_firebase_admin, FIREBASE_ADMIN_AVAILABLE
-        
-        if not FIREBASE_ADMIN_AVAILABLE:
-            return {
-                "firebase_available": False,
-                "error": "Firebase Admin SDK not installed. Run: pip install firebase-admin"
-            }
-        
-        firebase_initialized = initialize_firebase_admin()
-        
+        from fcm_utils import validate_fcm_config
+        fcm_ok = validate_fcm_config()
+
         return {
-            "firebase_available": FIREBASE_ADMIN_AVAILABLE,
-            "firebase_initialized": firebase_initialized,
-            "status": "ready" if firebase_initialized else "configuration_needed"
+            "firebase_configured": fcm_ok,
+            "stripe_configured": stripe_configured,
+            "error": None,
+            "status": "ok" if fcm_ok else "configuration_needed"
         }
     except Exception as e:
         return {
-            "firebase_available": False,
-            "firebase_initialized": False,
+            "firebase_configured": False,
+            "stripe_configured": stripe_configured,
             "error": str(e),
             "status": "error"
         }
@@ -1678,10 +1677,8 @@ async def send_notification_endpoint(
         if notification_data.user_type not in ["all", "app_user", "seller"]:
             raise HTTPException(status_code=400, detail="Invalid user_type. Must be 'all', 'app_user', or 'seller'")
         
-        # Get admin ID
-        admin = db.query(User).filter(User.email == current_admin["email"]).first()
-        if not admin:
-            raise HTTPException(status_code=404, detail="Admin not found")
+        # Get admin from current_admin dict
+        admin = current_admin["user"]  # current_admin already contains the admin user object
         
         # Create notification record
         new_notification = Notification(
@@ -2754,6 +2751,8 @@ async def get_request_offers(
                 "business_name": seller.business_name,
                 "owner_firstname": seller.owner_firstname,
                 "owner_lastname": seller.owner_lastname,
+                "business_address": seller.business_address,
+                "logo_url": seller.logo_url,
                 "latitude": seller.latitude,
                 "longitude": seller.longitude,
                 "shop_location_name": seller.shop_location_name
@@ -2813,30 +2812,16 @@ async def update_offer_status(
     if status_data.status not in ["accepted", "rejected"]:
         raise HTTPException(status_code=400, detail="Status must be 'accepted' or 'rejected'")
     
+    # Only allow rejecting through this endpoint
+    # Accepting should happen through payment flow
+    if status_data.status == "accepted":
+        raise HTTPException(
+            status_code=400, 
+            detail="To accept an offer, please complete the payment process first"
+        )
+    
     offer.status = status_data.status
     offer.updated_at = datetime.now(timezone.utc).isoformat()
-    
-    # If offer is accepted, create a payment record (5% of offer price)
-    if status_data.status == "accepted":
-        request.status = "completed"
-        request.updated_at = datetime.now(timezone.utc).isoformat()
-        
-        # Calculate 5% deposit
-        deposit_amount = offer.price * 0.05
-        
-        # Create payment record
-        payment = Payment(
-            offer_id=offer.id,
-            user_id=current_user.id,
-            seller_id=offer.seller_id,
-            amount=deposit_amount,
-            total_amount=offer.price,
-            status="pending"
-        )
-        db.add(payment)
-        db.commit()
-        db.refresh(payment)
-    
     db.commit()
     
     return MessageResponse(message=f"Offer {status_data.status} successfully", success=True)
@@ -2903,9 +2888,9 @@ async def create_payment_intent(
     if not offer:
         raise HTTPException(status_code=404, detail="Offer not found")
     
-    # Verify the offer is accepted
-    if offer.status != "accepted":
-        raise HTTPException(status_code=400, detail="Offer must be accepted before payment")
+    # Verify the offer is pending (payment happens before acceptance)
+    if offer.status != "pending":
+        raise HTTPException(status_code=400, detail="Offer must be pending to create payment")
     
     # Get or create payment record
     payment = db.query(Payment).filter(Payment.offer_id == offer.id).first()
@@ -2993,6 +2978,19 @@ async def confirm_payment(
             payment.status = "completed"
             payment.stripe_charge_id = intent.latest_charge if hasattr(intent, 'latest_charge') else None
             payment.updated_at = datetime.now(timezone.utc).isoformat()
+            
+            # Accept the offer after payment is confirmed
+            offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
+            if offer and offer.status == "pending":
+                offer.status = "accepted"
+                offer.updated_at = datetime.now(timezone.utc).isoformat()
+                
+                # Mark the request as completed
+                request = db.query(SparePartRequest).filter(SparePartRequest.id == offer.request_id).first()
+                if request:
+                    request.status = "completed"
+                    request.updated_at = datetime.now(timezone.utc).isoformat()
+            
             db.commit()
             
             return {
