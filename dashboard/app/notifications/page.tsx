@@ -59,14 +59,30 @@ export default function NotificationsPage() {
   const fetchNotifications = async () => {
     try {
       const token = localStorage.getItem('token')
+      
+      // Validate token exists and is not empty
+      if (!token || token.trim() === '') {
+        console.error('No authentication token found')
+        alert('You are not logged in. Please log in to continue.')
+        // Redirect to login page
+        window.location.href = '/login'
+        return
+      }
+      
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/notifications`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
       })
+      
       if (response.ok) {
         const data = await response.json()
         setNotifications(data)
+      } else if (response.status === 401) {
+        console.error('Authentication failed - invalid or expired token')
+        alert('Your session has expired. Please log in again.')
+        localStorage.removeItem('token')
+        window.location.href = '/login'
       } else {
         const errorData = await response.json()
         console.error('Failed to fetch notifications:', errorData)
@@ -131,6 +147,14 @@ export default function NotificationsPage() {
       }
 
       const token = localStorage.getItem('token')
+      
+      // Validate token exists and is not empty
+      if (!token || token.trim() === '') {
+        alert('You are not logged in. Please log in to continue.')
+        window.location.href = '/login'
+        return
+      }
+      
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/notifications/send`, {
         method: 'POST',
         headers: {
@@ -153,6 +177,10 @@ export default function NotificationsPage() {
         })
         setErrors({})
         fetchNotifications()
+      } else if (response.status === 401) {
+        alert('Your session has expired. Please log in again.')
+        localStorage.removeItem('token')
+        window.location.href = '/login'
       } else {
         const errorMessage = responseData.detail || responseData.message || 'Unknown error occurred'
         alert(`❌ Failed to send notification: ${errorMessage}`)
