@@ -558,16 +558,6 @@ docker run -p 8080:8080 smart-farmer-backend
 - [ ] Test API endpoints at http://localhost:8000/docs
 - [ ] Access dashboard at http://localhost:3000
 
-## 🎯 Default Admin Credentials
-
-After running `init_database.py`, use these credentials to login to the admin dashboard:
-
-```
-Email: admin@smartfarmer.com
-Password: admin123
-```
-
-**⚠️ IMPORTANT:** Change these credentials immediately in production!
 
 ## 🔐 Security Notes
 
