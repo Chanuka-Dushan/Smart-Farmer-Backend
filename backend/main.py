@@ -810,7 +810,7 @@ def check_future_risk(location: str):
 @app.post("/api/predict-lifecycle")
 async def predict_lifecycle(
     part_name: str = Form(...),
-    usage_hours: float = Form(...),
+    usage_hours: Optional[float] = Form(None),
     location: str = Form(...),
     image: UploadFile = File(...) 
 ):
@@ -829,6 +829,7 @@ async def predict_lifecycle(
     prediction_start_time = datetime.now(timezone.utc)
     
     try:
+        usage_hours_value = float(usage_hours or 0.0)
         logger.info(f"📥 NEW REQUEST: {part_name} | Hours: {usage_hours} | Location: {location}")
         logger.info(f"📸 Image: {image.filename} ({image.content_type})")
 
@@ -943,7 +944,7 @@ async def predict_lifecycle(
             logger.info(f"✨ Condition Bonus: +{int(condition_bonus * 100)}% life extension")
         
         # 2. Calculate Real Usage (Inflated by Historical Stress)
-        real_usage_impact = usage_hours * hist_stress
+        real_usage_impact = usage_hours_value * hist_stress
         
         # 3. Remaining Life
         remaining = effective_capacity - real_usage_impact
@@ -2185,6 +2186,8 @@ def social_login(social_data: SocialLoginRequest, db: Session = Depends(get_db))
             data={"sub": seller.email, "user_type": "seller", "user_id": seller.id}
         )
         
+        logger.info(f"Seller {seller.id} social login - Logo URL: {seller.logo_url}")
+        
         return {
             "access_token": access_token,
             "token_type": "bearer",
@@ -2236,6 +2239,8 @@ def social_login(social_data: SocialLoginRequest, db: Session = Depends(get_db))
     access_token = create_access_token(
         data={"sub": user.email, "user_type": "user", "user_id": user.id}
     )
+    
+    logger.info(f"User {user.id} social login - Profile picture: {user.profile_picture_url}")
     
     return {
         "access_token": access_token,
