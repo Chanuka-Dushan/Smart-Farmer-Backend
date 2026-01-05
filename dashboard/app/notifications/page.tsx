@@ -58,7 +58,7 @@ export default function NotificationsPage() {
 
   const fetchNotifications = async () => {
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('authToken')
       
       // Validate token exists and is not empty
       if (!token || token.trim() === '') {
@@ -146,7 +146,7 @@ export default function NotificationsPage() {
         payload.target_user_id = parseInt(formData.target_user_id.trim())
       }
 
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('authToken')
       
       // Validate token exists and is not empty
       if (!token || token.trim() === '') {
