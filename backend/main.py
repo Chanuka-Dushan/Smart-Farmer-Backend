@@ -2926,17 +2926,34 @@ async def create_payment_intent(
             }
         )
         
+        logger.info(f"Stripe payment intent created: {intent.id}")
+        
         # Update payment record with intent ID
         payment.stripe_payment_intent_id = intent.id
         db.commit()
         
+        # Safely access client_secret
+        client_secret = getattr(intent, 'client_secret', None)
+        if not client_secret:
+            logger.error(f"Payment intent created but no client_secret returned: {intent}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Payment intent created but client secret is missing"
+            )
+        
         return {
-            "client_secret": intent.client_secret,
+            "client_secret": client_secret,
             "payment_intent_id": intent.id,
             "amount": payment.amount,
             "total_amount": payment.total_amount,
             "payment_id": payment.id
         }
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error during payment intent creation: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Stripe error: {str(e)}"
+        )
     except Exception as e:
         logger.error(f"Stripe payment intent creation failed: {str(e)}")
         raise HTTPException(
