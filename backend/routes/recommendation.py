@@ -109,3 +109,48 @@ def recommend_hybrid(part_id: int, db: Session = Depends(get_db)):
         "recommendations": results
     }
 
+@router.get("/compare/{base_id}/{alt_id}")
+def compare_parts(base_id: int, alt_id: int, db: Session = Depends(get_db)):
+    base_part = db.query(Part).filter(Part.id == base_id).first()
+    alt_part = db.query(Part).filter(Part.id == alt_id).first()
+
+    if not base_part or not alt_part:
+        raise HTTPException(status_code=404, detail="One or both parts not found")
+
+    return {
+        "base_part": {
+            "id": base_part.id,
+            "name": base_part.name,
+            "brand": base_part.brand,
+            "price": base_part.price,
+            "lifespan": base_part.lifespan,
+            "diameter": base_part.diameter,
+            "image_url": getattr(base_part, "image_url", None)
+        },
+        "alternative_part": {
+            "id": alt_part.id,
+            "name": alt_part.name,
+            "brand": alt_part.brand,
+            "price": alt_part.price,
+            "lifespan": alt_part.lifespan,
+            "diameter": alt_part.diameter,
+            "image_url": getattr(alt_part, "image_url", None)
+        },
+        "difference": {
+            "price": (
+                alt_part.price - base_part.price
+                if base_part.price is not None and alt_part.price is not None
+                else None
+            ),
+            "lifespan": (
+                alt_part.lifespan - base_part.lifespan
+                if base_part.lifespan is not None and alt_part.lifespan is not None
+                else None
+            ),
+            "diameter": (
+                alt_part.diameter - base_part.diameter
+                if base_part.diameter is not None and alt_part.diameter is not None
+                else None
+            )
+        }
+    }
