@@ -1,5 +1,6 @@
 from sqlalchemy import Column, Integer, String, Float
-from init_db import Base   # <-- IMPORTANT (match your Base)
+from db_base import Base
+  # <-- IMPORTANT (match your Base)
 
 class Part(Base):
     __tablename__ = "parts"
@@ -16,3 +17,4 @@ class Part(Base):
 
     price = Column(Float, nullable=False)
     lifespan = Column(Integer, nullable=True)
+    image_url = Column(String, nullable=True)

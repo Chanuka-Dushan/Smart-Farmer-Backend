@@ -31,6 +31,11 @@ from PIL import Image
 import requests
 import json
 
+from routes.recommendation import router as recommendation_router
+
+
+
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -719,6 +724,9 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
 
 # --- 5. API Endpoints ---
 app = FastAPI()
+from routes.recommendation import router as recommendation_router
+
+app.include_router(recommendation_router)
 
 # --- AI Knowledge Integration ---
 try:
