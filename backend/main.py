@@ -3532,7 +3532,7 @@ async def confirm_payment(
                     "status": payment.status,
                     "stripe_payment_intent_id": payment.stripe_payment_intent_id,
                     "stripe_charge_id": payment.stripe_charge_id,
-                    "created_at": payment.created_at.isoformat() if payment.created_at else None,
+                    "created_at": payment.created_at,
                 },
                 "offer": {
                     "id": offer.id if offer else None,
@@ -3959,8 +3959,8 @@ async def get_all_transactions(
                 "stripe_charge_id": payment.stripe_charge_id,
                 "status": payment.status or "unknown",
                 "payment_method": payment.payment_method or "unknown",
-                "created_at": payment.created_at.isoformat() if payment.created_at else None,
-                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
+                "created_at": payment.created_at,
+                "updated_at": payment.updated_at,
                 "offer": {
                     "id": offer.id,
                     "price": float(offer.price) if offer.price else 0.0,
@@ -3992,7 +3992,7 @@ async def get_all_transactions(
                 "amount": float(payment.amount) if payment.amount else 0.0,
                 "total_amount": float(payment.total_amount) if payment.total_amount else 0.0,
                 "status": payment.status or "unknown",
-                "created_at": payment.created_at.isoformat() if payment.created_at else None,
+                "created_at": payment.created_at,
                 "error": "Failed to load related data"
             })
     
