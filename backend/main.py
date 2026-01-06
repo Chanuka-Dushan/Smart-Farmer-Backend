@@ -2835,7 +2835,7 @@ async def create_spare_part_request(
     current_user: AppUser = Depends(get_current_app_user),
     db: Session = Depends(get_db)
 ):
-    """Create a new spare part request"""
+    """Create a new spare part request and notify all sellers"""
     new_request = SparePartRequest(
         user_id=current_user.id,
         title=request_data.title,
@@ -2847,6 +2847,69 @@ async def create_spare_part_request(
     db.add(new_request)
     db.commit()
     db.refresh(new_request)
+    
+    # Send notification to all active sellers
+    try:
+        from fcm_utils import send_multicast_notification, validate_fcm_config
+        
+        if validate_fcm_config():
+            # Get all active sellers with FCM tokens
+            sellers = db.query(Seller).filter(
+                Seller.is_active == True,
+                Seller.fcm_token.isnot(None),
+                Seller.fcm_token != ''
+            ).all()
+            
+            if sellers:
+                seller_tokens = [seller.fcm_token for seller in sellers if seller.fcm_token]
+                
+                if seller_tokens:
+                    # Extract part name from title or description
+                    part_name = request_data.title.replace('Spare Part Request: ', '').strip()
+                    if not part_name:
+                        # Try to extract from description
+                        desc_lines = request_data.description.split('\n')
+                        for line in desc_lines:
+                            if 'Part Name:' in line:
+                                part_name = line.split('Part Name:')[1].strip()
+                                break
+                    
+                    notification_title = f"New Spare Part Request: {part_name}"
+                    notification_body = f"A new request has been posted. {request_data.description[:100]}..."
+                    
+                    # Prepare notification data
+                    notification_data = {
+                        "title": notification_title,
+                        "body": notification_body,
+                        "image": request_data.image_url if request_data.image_url else None,
+                        "data": {
+                            "type": "spare_part_request",
+                            "request_id": new_request.id,
+                            "action": "open_request"
+                        }
+                    }
+                    
+                    # Send notifications to all sellers
+                    try:
+                        send_multicast_notification(
+                            tokens=seller_tokens,
+                            title=notification_title,
+                            body=notification_body,
+                            image_url=request_data.image_url,
+                            data={
+                                "type": "spare_part_request",
+                                "request_id": str(new_request.id),
+                                "action": "open_request"
+                            }
+                        )
+                        logger.info(f"✅ Sent notifications to {len(seller_tokens)} sellers for request {new_request.id}")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to send seller notifications: {e}")
+        else:
+            logger.warning("⚠️ FCM not configured, skipping seller notifications")
+    except Exception as e:
+        logger.error(f"❌ Error sending seller notifications: {e}")
+        # Don't fail the request creation if notification fails
     
     return new_request
 
@@ -3379,14 +3442,26 @@ async def confirm_payment(
             
             db.commit()
             
+            # Get offer details for response
+            offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
+            
             return {
                 "success": True,
-                "message": "Payment confirmed successfully",
+                "message": "Payment confirmed successfully. Offer has been accepted.",
                 "payment": {
                     "id": payment.id,
-                    "amount": payment.amount,
-                    "status": payment.status
-                }
+                    "amount": float(payment.amount) if payment.amount else 0.0,
+                    "total_amount": float(payment.total_amount) if payment.total_amount else 0.0,
+                    "status": payment.status,
+                    "stripe_payment_intent_id": payment.stripe_payment_intent_id,
+                    "stripe_charge_id": payment.stripe_charge_id,
+                    "created_at": payment.created_at.isoformat() if payment.created_at else None,
+                },
+                "offer": {
+                    "id": offer.id if offer else None,
+                    "status": offer.status if offer else None,
+                    "accepted": offer.status == "accepted" if offer else False
+                } if offer else None
             }
         elif intent.status in ['requires_payment_method', 'requires_confirmation', 'requires_action', 'processing']:
             # Payment is still in progress - don't mark as failed
@@ -3766,62 +3841,90 @@ async def get_user_stats(
 @app.get("/admin/transactions")
 async def get_all_transactions(
     skip: int = 0,
-    limit: int = 100,
+    limit: int = 1000,  # Increased default limit to show more transactions
     status: Optional[str] = None,
     current_admin: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get all payment transactions (Admin only)"""
+    from sqlalchemy import func
+    
     query = db.query(Payment)
     
     # Filter by status if provided
     if status:
         query = query.filter(Payment.status == status)
     
-    # Get transactions with pagination
-    transactions = query.order_by(Payment.created_at.desc()).offset(skip).limit(limit).all()
+    # Get total count for pagination
+    total_count = query.count()
+    
+    # Get transactions with pagination (no limit if limit is very high)
+    if limit >= 1000:
+        transactions = query.order_by(Payment.created_at.desc()).all()
+    else:
+        transactions = query.order_by(Payment.created_at.desc()).offset(skip).limit(limit).all()
     
     result = []
     for payment in transactions:
-        offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
-        user = db.query(AppUser).filter(AppUser.id == payment.user_id).first()
-        seller = db.query(Seller).filter(Seller.id == payment.seller_id).first()
-        
-        transaction_dict = {
-            "id": payment.id,
-            "offer_id": payment.offer_id,
-            "user_id": payment.user_id,
-            "seller_id": payment.seller_id,
-            "amount": payment.amount,
-            "total_amount": payment.total_amount,
-            "stripe_payment_intent_id": payment.stripe_payment_intent_id,
-            "stripe_charge_id": payment.stripe_charge_id,
-            "status": payment.status,
-            "payment_method": payment.payment_method,
-            "created_at": payment.created_at,
-            "updated_at": payment.updated_at,
-            "offer": {
-                "id": offer.id,
-                "price": offer.price,
-                "description": offer.description,
-                "status": offer.status
-            } if offer else None,
-            "user": {
-                "id": user.id,
-                "firstname": user.firstname,
-                "lastname": user.lastname,
-                "email": user.email
-            } if user else None,
-            "seller": {
-                "id": seller.id,
-                "business_name": seller.business_name,
-                "owner_firstname": seller.owner_firstname,
-                "owner_lastname": seller.owner_lastname
-            } if seller else None
-        }
-        result.append(transaction_dict)
+        try:
+            offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
+            user = db.query(AppUser).filter(AppUser.id == payment.user_id).first()
+            seller = db.query(Seller).filter(Seller.id == payment.seller_id).first()
+            
+            transaction_dict = {
+                "id": payment.id,
+                "offer_id": payment.offer_id,
+                "user_id": payment.user_id,
+                "seller_id": payment.seller_id,
+                "amount": float(payment.amount) if payment.amount else 0.0,
+                "total_amount": float(payment.total_amount) if payment.total_amount else 0.0,
+                "stripe_payment_intent_id": payment.stripe_payment_intent_id,
+                "stripe_charge_id": payment.stripe_charge_id,
+                "status": payment.status or "unknown",
+                "payment_method": payment.payment_method or "unknown",
+                "created_at": payment.created_at.isoformat() if payment.created_at else None,
+                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
+                "offer": {
+                    "id": offer.id,
+                    "price": float(offer.price) if offer.price else 0.0,
+                    "description": offer.description or "",
+                    "status": offer.status or "unknown"
+                } if offer else None,
+                "user": {
+                    "id": user.id,
+                    "firstname": user.firstname or "",
+                    "lastname": user.lastname or "",
+                    "email": user.email or ""
+                } if user else None,
+                "seller": {
+                    "id": seller.id,
+                    "business_name": seller.business_name or "",
+                    "owner_firstname": seller.owner_firstname or "",
+                    "owner_lastname": seller.owner_lastname or ""
+                } if seller else None
+            }
+            result.append(transaction_dict)
+        except Exception as e:
+            logger.error(f"Error processing transaction {payment.id}: {e}")
+            # Still include the transaction with minimal data
+            result.append({
+                "id": payment.id,
+                "offer_id": payment.offer_id,
+                "user_id": payment.user_id,
+                "seller_id": payment.seller_id,
+                "amount": float(payment.amount) if payment.amount else 0.0,
+                "total_amount": float(payment.total_amount) if payment.total_amount else 0.0,
+                "status": payment.status or "unknown",
+                "created_at": payment.created_at.isoformat() if payment.created_at else None,
+                "error": "Failed to load related data"
+            })
     
-    return result
+    return {
+        "transactions": result,
+        "total": total_count,
+        "skip": skip,
+        "limit": limit
+    }
 
 @app.get("/admin/transactions/stats")
 async def get_transaction_stats(

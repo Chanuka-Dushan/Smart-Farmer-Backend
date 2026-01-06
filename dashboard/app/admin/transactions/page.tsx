@@ -76,10 +76,11 @@ function TransactionsPage() {
 
   const fetchTransactions = async () => {
     try {
+      setLoading(true)
       const token = localStorage.getItem('authToken')
       const url = statusFilter 
-        ? `/api/admin/transactions?status=${statusFilter}`
-        : '/api/admin/transactions'
+        ? `/api/admin/transactions?status=${statusFilter}&limit=1000`
+        : '/api/admin/transactions?limit=1000'
       
       const response = await fetch(url, {
         headers: {
@@ -89,10 +90,21 @@ function TransactionsPage() {
       
       if (response.ok) {
         const data = await response.json()
-        setTransactions(data)
+        // Handle both old format (array) and new format (object with transactions array)
+        if (Array.isArray(data)) {
+          setTransactions(data)
+        } else if (data.transactions) {
+          setTransactions(data.transactions)
+        } else {
+          setTransactions([])
+        }
+      } else {
+        console.error('Failed to fetch transactions:', response.statusText)
+        setTransactions([])
       }
     } catch (error) {
       console.error('Failed to fetch transactions:', error)
+      setTransactions([])
     } finally {
       setLoading(false)
     }
