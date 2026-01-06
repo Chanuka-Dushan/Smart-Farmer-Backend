@@ -26,7 +26,6 @@ import {
 } from "@/components/ui/table"
 import { Bell, Send, Plus } from "lucide-react"
 import { useState, useEffect } from "react"
-import Swal from 'sweetalert2'
 
 interface Notification {
   id: number
@@ -64,12 +63,7 @@ export default function NotificationsPage() {
       // Validate token exists and is not empty
       if (!token || token.trim() === '') {
         console.error('No authentication token found')
-        await Swal.fire({
-          icon: 'warning',
-          title: 'Authentication Required',
-          text: 'You are not logged in. Please log in to continue.',
-          confirmButtonColor: '#3b82f6'
-        })
+        alert('You are not logged in. Please log in to continue.')
         // Redirect to login page
         window.location.href = '/login'
         return
@@ -86,32 +80,17 @@ export default function NotificationsPage() {
         setNotifications(data)
       } else if (response.status === 401) {
         console.error('Authentication failed - invalid or expired token')
-        await Swal.fire({
-          icon: 'warning',
-          title: 'Session Expired',
-          text: 'Your session has expired. Please log in again.',
-          confirmButtonColor: '#3b82f6'
-        })
+        alert('Your session has expired. Please log in again.')
         localStorage.removeItem('token')
         window.location.href = '/login'
       } else {
         const errorData = await response.json()
         console.error('Failed to fetch notifications:', errorData)
-        Swal.fire({
-          icon: 'error',
-          title: 'Error',
-          text: `Failed to load notifications: ${errorData.detail || 'Unknown error'}`,
-          confirmButtonColor: '#ef4444'
-        })
+        alert(`Failed to load notifications: ${errorData.detail || 'Unknown error'}`)
       }
     } catch (error) {
       console.error('Failed to fetch notifications:', error)
-      Swal.fire({
-        icon: 'error',
-        title: 'Connection Error',
-        text: 'Failed to load notifications. Please check your connection and try again.',
-        confirmButtonColor: '#ef4444'
-      })
+      alert('Failed to load notifications. Please check your connection and try again.')
     } finally {
       setLoading(false)
     }
@@ -155,20 +134,6 @@ export default function NotificationsPage() {
       return
     }
 
-    const result = await Swal.fire({
-      title: 'Send Notification?',
-      text: "This will send a push notification to the selected users.",
-      icon: 'question',
-      showCancelButton: true,
-      confirmButtonColor: '#3b82f6',
-      cancelButtonColor: '#6b7280',
-      confirmButtonText: 'Yes, send it!'
-    })
-
-    if (!result.isConfirmed) {
-      return
-    }
-
     setSending(true)
     try {
       const payload: any = {
@@ -185,12 +150,7 @@ export default function NotificationsPage() {
       
       // Validate token exists and is not empty
       if (!token || token.trim() === '') {
-        await Swal.fire({
-          icon: 'warning',
-          title: 'Authentication Required',
-          text: 'You are not logged in. Please log in to continue.',
-          confirmButtonColor: '#3b82f6'
-        })
+        alert('You are not logged in. Please log in to continue.')
         window.location.href = '/login'
         return
       }
@@ -207,14 +167,7 @@ export default function NotificationsPage() {
       const responseData = await response.json()
 
       if (response.ok) {
-        Swal.fire({
-          icon: 'success',
-          title: 'Success!',
-          text: responseData.message || 'Notification sent successfully!',
-          confirmButtonColor: '#10b981',
-          timer: 2000,
-          showConfirmButton: false
-        })
+        alert(`✅ ${responseData.message || 'Notification sent successfully!'}`)
         setIsDialogOpen(false)
         setFormData({
           title: '',
@@ -225,31 +178,16 @@ export default function NotificationsPage() {
         setErrors({})
         fetchNotifications()
       } else if (response.status === 401) {
-        await Swal.fire({
-          icon: 'warning',
-          title: 'Session Expired',
-          text: 'Your session has expired. Please log in again.',
-          confirmButtonColor: '#3b82f6'
-        })
+        alert('Your session has expired. Please log in again.')
         localStorage.removeItem('token')
         window.location.href = '/login'
       } else {
         const errorMessage = responseData.detail || responseData.message || 'Unknown error occurred'
-        Swal.fire({
-          icon: 'error',
-          title: 'Failed',
-          text: errorMessage,
-          confirmButtonColor: '#ef4444'
-        })
+        alert(`❌ Failed to send notification: ${errorMessage}`)
       }
     } catch (error) {
       console.error('Failed to send notification:', error)
-      Swal.fire({
-        icon: 'error',
-        title: 'Error',
-        text: 'Failed to send notification. Please check your connection and try again.',
-        confirmButtonColor: '#ef4444'
-      })
+      alert('❌ Failed to send notification. Please check your connection and try again.')
     } finally {
       setSending(false)
     }
