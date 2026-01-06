@@ -53,13 +53,23 @@ def initialize_firebase_admin():
         return True
         
     try:
-        # Check if already initialized
-        firebase_admin.get_app()
-        _firebase_app = firebase_admin.get_app()
-        logger.info("Firebase Admin SDK already initialized")
-        return True
-    except ValueError:
-        # Not initialized, proceed with initialization
+        # Check if already initialized with our custom name
+        try:
+            _firebase_app = firebase_admin.get_app('smart_farmer_app')
+            logger.info("Firebase Admin SDK already initialized (smart_farmer_app)")
+            return True
+        except ValueError:
+            # Try default app
+            try:
+                _firebase_app = firebase_admin.get_app()
+                logger.info("Firebase Admin SDK already initialized (default)")
+                return True
+            except ValueError:
+                # Not initialized, proceed with initialization
+                pass
+    except Exception as e:
+        logger.warning(f"Error checking Firebase app: {e}")
+        # Continue with initialization
         pass
     
     try:
@@ -151,21 +161,52 @@ def validate_fcm_config() -> bool:
         logger.error("Firebase Project ID not configured. Please set FIREBASE_PROJECT_ID in environment")
         return False
     
+    # Initialize Firebase Admin SDK
     initialized = initialize_firebase_admin()
     if not initialized:
         logger.error("Firebase Admin SDK initialization failed. Check your credentials.")
         return False
     
-    # Verify the app is properly initialized
+    # Verify the app is properly initialized - try multiple app names
     try:
-        app = firebase_admin.get_app()
-        if app.project_id != FIREBASE_PROJECT_ID.strip():
-            logger.warning(f"Firebase app project ID ({app.project_id}) doesn't match configured project ID ({FIREBASE_PROJECT_ID})")
-    except Exception as e:
+        app = None
+        # Try to get the app with our custom name first
+        try:
+            app = firebase_admin.get_app('smart_farmer_app')
+        except ValueError:
+            # Try default app
+            try:
+                app = firebase_admin.get_app()
+            except ValueError:
+                # App doesn't exist, try to initialize again
+                logger.warning("Firebase app not found, attempting to re-initialize...")
+                if initialize_firebase_admin():
+                    try:
+                        app = firebase_admin.get_app('smart_farmer_app')
+                    except ValueError:
+                        app = firebase_admin.get_app()
+                else:
+                    raise ValueError("Failed to initialize Firebase app")
+        
+        if app:
+            if hasattr(app, 'project_id') and app.project_id != FIREBASE_PROJECT_ID.strip():
+                logger.warning(f"Firebase app project ID ({app.project_id}) doesn't match configured project ID ({FIREBASE_PROJECT_ID})")
+            logger.info("Firebase app verified successfully")
+            return True
+        else:
+            logger.error("Firebase app is None after initialization")
+            return False
+            
+    except ValueError as e:
+        if "does not exist" in str(e):
+            logger.error("Firebase app does not exist. Attempting to initialize...")
+            if initialize_firebase_admin():
+                return True
         logger.error(f"Failed to verify Firebase app: {e}")
         return False
-        
-    return True
+    except Exception as e:
+        logger.error(f"Unexpected error verifying Firebase app: {e}")
+        return False
 
 
 def send_notification(
@@ -666,9 +707,12 @@ def send_push_notification(fcm_token: str, title: str, body: str, data: Optional
     return success
 
 
-# Initialize Firebase Admin SDK when module is imported
+# Initialize Firebase Admin SDK when module is imported (non-blocking)
 if __name__ != "__main__":
-    initialize_firebase_admin()
+    try:
+        initialize_firebase_admin()
+    except Exception as e:
+        logger.warning(f"Firebase initialization on import failed (will retry on first use): {e}")
 def send_data_message(
     fcm_token: str,
     data: Dict,
