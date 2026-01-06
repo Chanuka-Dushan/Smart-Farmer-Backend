@@ -33,6 +33,7 @@ import { Label } from "@/components/ui/label"
 import { useEffect, useState } from "react"
 import { useToast } from "@/hooks/use-toast"
 import { ProtectedRoute } from "@/components/ProtectedRoute"
+import Swal from 'sweetalert2'
 
 interface User {
   id: number
@@ -220,7 +221,19 @@ function UsersManagement() {
   }
 
   const handleDeleteUser = async (user: User, permanent: boolean = false) => {
-    if (!confirm(`Are you sure?`)) return
+    const result = await Swal.fire({
+      title: 'Are you sure?',
+      text: permanent 
+        ? "This action cannot be undone. The user will be permanently deleted." 
+        : "The user will be marked as deleted.",
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#ef4444',
+      cancelButtonColor: '#6b7280',
+      confirmButtonText: 'Yes, delete it!'
+    })
+
+    if (!result.isConfirmed) return
 
     try {
       if (typeof window === 'undefined') return
