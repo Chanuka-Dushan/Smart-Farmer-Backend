@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 
-from models.user import Admin, AppUser
+from models.user import Admin, AppUser, Seller
 from models.schemas import (
     UserResponse,
     AdminUserUpdateRequest,
@@ -14,7 +14,10 @@ from models.schemas import (
     AdminResponse,
     MessageResponse,
     UserLoginRequest,
-    Token
+    Token,
+    SellerResponse,
+    AdminSellerVerifyRequest,
+    AdminSellerActivateRequest
 )
 from utils.database import get_db
 from utils.auth import (
@@ -357,3 +360,109 @@ def delete_user(
             message="User soft deleted (marked as deleted)",
             success=True
         )
+
+# ============= Seller Management (Dashboard) =============
+
+@router.get("/sellers", response_model=List[SellerResponse])
+def get_all_sellers(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    search: Optional[str] = Query(None),
+    current_admin: Admin = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all sellers for dashboard view
+    """
+    query = db.query(Seller)
+    
+    if search:
+        search_filter = f"%{search}%"
+        query = query.filter(
+            or_(
+                Seller.business_name.ilike(search_filter),
+                Seller.owner_firstname.ilike(search_filter),
+                Seller.owner_lastname.ilike(search_filter),
+                Seller.email.ilike(search_filter)
+            )
+        )
+    
+    sellers = query.order_by(Seller.created_at.desc()).offset(skip).limit(limit).all()
+    return [SellerResponse.from_orm(seller) for seller in sellers]
+
+@router.get("/sellers/{seller_id}", response_model=SellerResponse)
+def get_seller_by_id(
+    seller_id: int,
+    current_admin: Admin = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get specific seller details"""
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+    if not seller:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Seller not found"
+        )
+    return SellerResponse.from_orm(seller)
+
+@router.put("/sellers/{seller_id}/verify", response_model=SellerResponse)
+def verify_seller(
+    seller_id: int,
+    verify_data: AdminSellerVerifyRequest,
+    current_admin: Admin = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Verify or unverify a seller"""
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+    if not seller:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Seller not found"
+        )
+    
+    seller.is_verified = verify_data.is_verified
+    db.commit()
+    db.refresh(seller)
+    return SellerResponse.from_orm(seller)
+
+@router.put("/sellers/{seller_id}/activate", response_model=SellerResponse)
+def activate_seller(
+    seller_id: int,
+    activate_data: AdminSellerActivateRequest,
+    current_admin: Admin = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Activate or deactivate a seller"""
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+    if not seller:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Seller not found"
+        )
+    
+    seller.is_active = activate_data.is_active
+    db.commit()
+    db.refresh(seller)
+    return SellerResponse.from_orm(seller)
+
+@router.delete("/sellers/{seller_id}", response_model=MessageResponse)
+def delete_seller(
+    seller_id: int,
+    current_admin: Admin = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Delete a seller"""
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+    if not seller:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Seller not found"
+        )
+    
+    db.delete(seller)
+    db.commit()
+    
+    return MessageResponse(
+        message="Seller deleted successfully",
+        success=True
+    )

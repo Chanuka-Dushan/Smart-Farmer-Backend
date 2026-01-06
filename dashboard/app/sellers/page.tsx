@@ -37,18 +37,27 @@ interface Seller {
   updated_at: string
 }
 
+import { useAuth } from "@/context/AuthContext"
+
 export default function SellersPage() {
   const [sellers, setSellers] = useState<Seller[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState("")
+  const { token } = useAuth()
 
   useEffect(() => {
-    fetchSellers()
-  }, [])
+    if (token) {
+      fetchSellers()
+    }
+  }, [token])
 
   const fetchSellers = async () => {
     try {
-      const response = await fetch('/api/admin/sellers')
+      const response = await fetch('/api/admin/sellers', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
       if (response.ok) {
         const data = await response.json()
         setSellers(data)
@@ -66,6 +75,7 @@ export default function SellersPage() {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ is_verified: !currentStatus }),
       })
@@ -84,6 +94,7 @@ export default function SellersPage() {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ is_active: !currentStatus }),
       })

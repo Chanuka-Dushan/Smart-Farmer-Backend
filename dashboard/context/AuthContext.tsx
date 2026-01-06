@@ -25,13 +25,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Initialize auth state from localStorage
   useEffect(() => {
-    const storedToken = localStorage.getItem('authToken')
-    if (storedToken) {
-      setToken(storedToken)
-      verifyToken(storedToken)
-    } else {
-      setIsLoading(false)
+    const initializeAuth = () => {
+      try {
+        // Check if we're on the client side
+        if (typeof window !== 'undefined') {
+          const storedToken = localStorage.getItem('authToken')
+          if (storedToken) {
+            setToken(storedToken)
+            verifyToken(storedToken)
+          } else {
+            setIsLoading(false)
+          }
+        } else {
+          // Server side, just set loading to false
+          setIsLoading(false)
+        }
+      } catch (error) {
+        console.error('Error initializing auth:', error)
+        setIsLoading(false)
+      }
     }
+
+    initializeAuth()
   }, [])
 
   const verifyToken = async (token: string) => {
@@ -49,13 +64,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser({ email: data.email, role: 'admin' })
         setToken(token)
       } else {
-        localStorage.removeItem('authToken')
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('authToken')
+        }
         setToken(null)
         setUser(null)
       }
     } catch (error) {
       console.error('Token verification failed:', error)
-      localStorage.removeItem('authToken')
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('authToken')
+      }
       setToken(null)
       setUser(null)
     } finally {
@@ -98,7 +117,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const newToken = data.access_token
 
       // Store token in localStorage
-      localStorage.setItem('authToken', newToken)
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('authToken', newToken)
+      }
       setToken(newToken)
       setUser(data.user)
     } catch (error) {
@@ -109,9 +130,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const logout = () => {
-    localStorage.removeItem('authToken')
-    setToken(null)
-    setUser(null)
+    try {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('authToken')
+      }
+      setToken(null)
+      setUser(null)
+    } catch (error) {
+      console.error('Error during logout:', error)
+      // Still clear the state even if localStorage fails
+      setToken(null)
+      setUser(null)
+    }
   }
 
   return (

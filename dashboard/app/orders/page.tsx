@@ -145,7 +145,7 @@ export default function OrdersPage() {
                     <TableCell>
                       <div className="flex items-center gap-3">
                         <div className="h-8 w-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-sm font-semibold">
-                          {order.customer.split(' ').map(n => n[0]).join('')}
+                          {order.customer?.split(' ').map(n => n?.[0] || '').join('') || 'NA'}
                         </div>
                         {order.customer}
                       </div>

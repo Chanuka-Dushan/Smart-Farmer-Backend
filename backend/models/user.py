@@ -17,29 +17,13 @@ class AppUser(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     phone_number = Column(String(20), nullable=True)
     hashed_password = Column(String(255), nullable=False)
+    profile_picture_url = Column(String(500), nullable=True)  # Profile picture URL
     fcm_token = Column(String(500), nullable=True)  # For push notifications
     address = Column(String(500), nullable=True)
-    profile_picture_url = Column(String(500), nullable=True)
-    google_id = Column(String(255), nullable=True)
-    facebook_id = Column(String(255), nullable=True)
-    is_social_login = Column(Boolean, default=False)
     is_deleted = Column(Boolean, default=False)
     is_banned = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-class PasswordReset(Base):
-    """
-    Password Reset Token Model
-    """
-    __tablename__ = "password_resets"
-    
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    email = Column(String(255), index=True, nullable=False)
-    token = Column(String(255), unique=True, index=True, nullable=False)
-    expires_at = Column(DateTime, nullable=False)
-    is_used = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
 
 class Seller(Base):
     """
@@ -63,6 +47,7 @@ class Seller(Base):
     shop_location_name = Column(String(255), nullable=True)  # e.g., "Main Market", "Downtown Branch"
     is_verified = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
+    onboarding_completed = Column(Boolean, default=False)
     fcm_token = Column(String(500), nullable=True)  # For push notifications
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

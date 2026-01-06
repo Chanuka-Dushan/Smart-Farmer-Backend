@@ -104,12 +104,39 @@ class AdminResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class AdminSellerVerifyRequest(BaseModel):
+    """Request model for verifying/unverifying seller"""
+    is_verified: bool
+
+class AdminSellerActivateRequest(BaseModel):
+    """Request model for activating/deactivating seller"""
+    is_active: bool
+
+class SellerResponse(BaseModel):
+    """Response model for seller data"""
+    id: int
+    business_name: str
+    owner_firstname: str
+    owner_lastname: str
+    email: str
+    phone_number: Optional[str]
+    business_address: Optional[str]
+    business_description: Optional[str]
+    is_verified: bool
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
 # ============= Common Schemas =============
 
 class Token(BaseModel):
     """JWT Token response"""
     access_token: str
     token_type: str
+# ... (rest of file)
 
 class TokenData(BaseModel):
     """Token payload data"""

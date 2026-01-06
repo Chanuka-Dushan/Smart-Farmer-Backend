@@ -41,10 +41,36 @@ interface User {
   email: string
   phone_number: string | null
   address: string | null
+  user_type: 'app_user' | 'seller'
   is_banned: boolean
   is_deleted: boolean
   created_at: string
-  updated_at: string
+}
+
+interface Seller {
+  id: number
+  business_name: string
+  owner_firstname: string
+  owner_lastname: string
+  email: string
+  phone_number: string | null
+  business_address: string | null
+  is_active: boolean
+  is_verified: boolean
+  created_at: string
+}
+
+interface Seller {
+  id: number
+  business_name: string
+  owner_firstname: string
+  owner_lastname: string
+  email: string
+  phone_number: string | null
+  business_address: string | null
+  is_active: boolean
+  is_verified: boolean
+  created_at: string
 }
 
 interface UserStats {
@@ -83,15 +109,47 @@ function UsersManagement() {
   const fetchUsers = async () => {
     try {
       const token = localStorage.getItem('authToken')
-      const response = await fetch(`/api/admin/users?limit=100&search=${searchQuery}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+      const headers = {
+        'Authorization': `Bearer ${token}`
+      }
+
+      // Fetch app users
+      const usersResponse = await fetch(`/api/admin/users?limit=100&search=${searchQuery}`, {
+        headers,
       })
       
-      if (response.ok) {
-        const data = await response.json()
-        setUsers(data)
+      // Fetch sellers
+      const sellersResponse = await fetch(`/api/admin/sellers?limit=100&search=${searchQuery}`, {
+        headers,
+      })
+      
+      if (usersResponse.ok && sellersResponse.ok) {
+        const usersData = await usersResponse.json()
+        const sellersData = await sellersResponse.json()
+        
+        // Transform app users to include user_type
+        const transformedUsers: User[] = usersData.map((user: any) => ({
+          ...user,
+          user_type: 'app_user' as const
+        }))
+        
+        // Transform sellers to match User interface
+        const transformedSellers: User[] = sellersData.map((seller: Seller) => ({
+          id: seller.id,
+          firstname: seller.owner_firstname,
+          lastname: seller.owner_lastname,
+          email: seller.email,
+          phone_number: seller.phone_number,
+          address: seller.business_address,
+          user_type: 'seller' as const,
+          is_banned: !seller.is_active,
+          is_deleted: false,
+          created_at: seller.created_at
+        }))
+        
+        // Combine both arrays
+        const combinedUsers = [...transformedUsers, ...transformedSellers]
+        setUsers(combinedUsers)
       } else {
         toast({
           title: "Error",
@@ -136,8 +194,32 @@ function UsersManagement() {
 
   const handleBanUser = async (userId: number, currentBanStatus: boolean) => {
     try {
+      // Find the user to determine the type
+      const user = users.find(u => u.id === userId)
+      if (!user) {
+        toast({
+          title: "Error",
+          description: "User not found",
+          variant: "destructive"
+        })
+        return
+      }
+
       const token = localStorage.getItem('authToken')
-      const response = await fetch(`/api/admin/users/${userId}/ban?is_banned=${!currentBanStatus}`, {
+      let endpoint: string
+      let action: string
+      
+      if (user.user_type === 'seller') {
+        // For sellers, use activate/deactivate endpoint
+        endpoint = `/api/admin/sellers/${userId}/activate?is_active=${currentBanStatus}`
+        action = currentBanStatus ? 'deactivated' : 'activated'
+      } else {
+        // For app users, use ban/unban endpoint
+        endpoint = `/api/admin/users/${userId}/ban?is_banned=${!currentBanStatus}`
+        action = !currentBanStatus ? 'banned' : 'unbanned'
+      }
+
+      const response = await fetch(endpoint, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -148,7 +230,7 @@ function UsersManagement() {
       if (response.ok) {
         toast({
           title: "Success",
-          description: `User ${!currentBanStatus ? 'banned' : 'unbanned'} successfully`
+          description: `User ${action} successfully`
         })
         fetchUsers()
         fetchStats()
@@ -175,8 +257,27 @@ function UsersManagement() {
     }
 
     try {
+      // Find the user to determine the type
+      const user = users.find(u => u.id === userId)
+      if (!user) {
+        toast({
+          title: "Error",
+          description: "User not found",
+          variant: "destructive"
+        })
+        return
+      }
+
       const token = localStorage.getItem('authToken')
-      const response = await fetch(`/api/admin/users/${userId}?permanent=${permanent}`, {
+      let endpoint: string
+      
+      if (user.user_type === 'seller') {
+        endpoint = `/api/admin/sellers/${userId}${permanent ? '?permanent=true' : ''}`
+      } else {
+        endpoint = `/api/admin/users/${userId}?permanent=${permanent}`
+      }
+
+      const response = await fetch(endpoint, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -367,6 +468,7 @@ function UsersManagement() {
                   <TableRow>
                     <TableHead>Name</TableHead>
                     <TableHead>Email</TableHead>
+                    <TableHead>Type</TableHead>
                     <TableHead>Phone</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Joined</TableHead>
@@ -379,12 +481,21 @@ function UsersManagement() {
                       <TableCell className="font-medium">
                         <div className="flex items-center gap-3">
                           <div className="h-8 w-8 rounded-full bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center text-white text-sm font-semibold">
-                            {user.firstname[0]}{user.lastname[0]}
+                            {user.firstname?.[0] || ''}{user.lastname?.[0] || ''}
                           </div>
                           {user.firstname} {user.lastname}
                         </div>
                       </TableCell>
                       <TableCell>{user.email}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={
+                          user.user_type === 'seller' 
+                            ? "border-emerald-500 text-emerald-600 bg-emerald-50" 
+                            : "border-blue-500 text-blue-600 bg-blue-50"
+                        }>
+                          {user.user_type === 'app_user' ? 'BUYER' : 'SELLER'}
+                        </Badge>
+                      </TableCell>
                       <TableCell>{user.phone_number || '-'}</TableCell>
                       <TableCell>
                         <div className="flex gap-2">

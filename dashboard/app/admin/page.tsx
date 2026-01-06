@@ -199,7 +199,7 @@ function Dashboard() {
                     className="flex items-start gap-4 p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
                   >
                     <div className="h-10 w-10 rounded-full bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center text-white font-semibold text-sm flex-shrink-0">
-                      {activity.user.split(' ').map(n => n[0]).join('')}
+                      {activity.user?.split(' ').map(n => n?.[0] || '').join('') || 'NA'}
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium">{activity.user}</p>

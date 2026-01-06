@@ -4,6 +4,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from passlib.context import CryptContext
 
+from utils.database import engine
+from db_base import Base
+
 # Load environment
 load_dotenv()
 
