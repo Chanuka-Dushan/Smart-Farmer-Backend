@@ -454,6 +454,9 @@ class SparePartOfferResponse(BaseModel):
     price: float
     description: str
     status: str
+    created_at: Optional[str] = None
+    seller: Optional[dict] = None  # Seller information
+    seller: Optional[dict] = None  # Seller information
 
 # Payment Models
 class PaymentIntentCreate(BaseModel):
@@ -3132,9 +3135,13 @@ async def create_payment_intent(
             pass
         
         # Create Stripe payment intent (amount in cents)
+        # Note: Stripe doesn't support LKR directly, so we use USD
+        # The amount is already in LKR, so we need to convert it to USD
+        # For now, using USD as Stripe doesn't support LKR currency
+        # TODO: Consider using a payment gateway that supports LKR or implement currency conversion
         intent = stripe_module.PaymentIntent.create(
             amount=int(payment.amount * 100),  # Convert to cents
-            currency='usd',
+            currency='usd',  # Stripe doesn't support LKR, using USD
             metadata={
                 'payment_id': str(payment.id),
                 'offer_id': str(offer.id),
