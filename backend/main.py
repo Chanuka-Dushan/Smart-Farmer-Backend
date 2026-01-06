@@ -3073,7 +3073,17 @@ async def create_payment_intent(
     db: Session = Depends(get_db)
 ):
     """Create a Stripe payment intent for 5% deposit"""
-    if not stripe_configured or stripe is None:
+    # Check stripe configuration - use stripe_configured flag to avoid UnboundLocalError
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    # Import stripe module reference to avoid UnboundLocalError
+    import stripe as stripe_module
+    
+    if stripe_module is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Payment service not configured"
@@ -3113,12 +3123,16 @@ async def create_payment_intent(
         # Workaround for Stripe library bug where stripe.apps is None
         # Ensure apps module is imported before creating payment intent
         try:
-            import stripe.apps
+            # Use getattr to access apps without triggering local variable detection
+            if not hasattr(stripe_module, 'apps') or stripe_module.apps is None:
+                # Force import of apps module
+                import importlib
+                importlib.import_module('stripe.apps')
         except (AttributeError, ImportError):
             pass
         
         # Create Stripe payment intent (amount in cents)
-        intent = stripe.PaymentIntent.create(
+        intent = stripe_module.PaymentIntent.create(
             amount=int(payment.amount * 100),  # Convert to cents
             currency='usd',
             metadata={
@@ -3174,7 +3188,7 @@ async def create_payment_intent(
             "total_amount": payment.total_amount,
             "payment_id": payment.id
         }
-    except stripe.error.StripeError as e:
+    except stripe_module.error.StripeError as e:
         logger.error(f"Stripe error during payment intent creation: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -3196,7 +3210,17 @@ async def confirm_payment(
     db: Session = Depends(get_db)
 ):
     """Confirm payment completion"""
-    if not stripe_configured or stripe is None:
+    # Check stripe configuration - use stripe_configured flag to avoid UnboundLocalError
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    # Import stripe module reference to avoid UnboundLocalError
+    import stripe as stripe_module
+    
+    if stripe_module is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Payment service not configured"
@@ -3204,7 +3228,7 @@ async def confirm_payment(
     
     try:
         # Retrieve payment intent from Stripe
-        intent = stripe.PaymentIntent.retrieve(payment_data.payment_intent_id)
+        intent = stripe_module.PaymentIntent.retrieve(payment_data.payment_intent_id)
         
         # Find payment record
         payment = db.query(Payment).filter(
@@ -3256,7 +3280,7 @@ async def confirm_payment(
                 status_code=400,
                 detail=f"Payment not completed. Status: {intent.status}"
             )
-    except stripe.error.StripeError as e:
+    except stripe_module.error.StripeError as e:
         logger.error(f"Stripe error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
