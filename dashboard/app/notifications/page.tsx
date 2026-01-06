@@ -162,14 +162,7 @@ export default function NotificationsPage() {
       showCancelButton: true,
       confirmButtonColor: '#3b82f6',
       cancelButtonColor: '#6b7280',
-      confirmButtonText: 'Yes, send it!',
-      // Ensure SweetAlert appears above the Radix UI Dialog (z-index 50)
-      didOpen: () => {
-        const container = Swal.getContainer();
-        if (container) {
-          container.style.zIndex = '100000';
-        }
-      }
+      confirmButtonText: 'Yes, send it!'
     })
 
     if (!result.isConfirmed) {
@@ -196,11 +189,7 @@ export default function NotificationsPage() {
           icon: 'warning',
           title: 'Authentication Required',
           text: 'You are not logged in. Please log in to continue.',
-          confirmButtonColor: '#3b82f6',
-          didOpen: () => {
-            const container = Swal.getContainer();
-            if (container) container.style.zIndex = '100000';
-          }
+          confirmButtonColor: '#3b82f6'
         })
         window.location.href = '/login'
         return
@@ -224,11 +213,7 @@ export default function NotificationsPage() {
           text: responseData.message || 'Notification sent successfully!',
           confirmButtonColor: '#10b981',
           timer: 2000,
-          showConfirmButton: false,
-          didOpen: () => {
-            const container = Swal.getContainer();
-            if (container) container.style.zIndex = '100000';
-          }
+          showConfirmButton: false
         })
         setIsDialogOpen(false)
         setFormData({
@@ -244,11 +229,7 @@ export default function NotificationsPage() {
           icon: 'warning',
           title: 'Session Expired',
           text: 'Your session has expired. Please log in again.',
-          confirmButtonColor: '#3b82f6',
-          didOpen: () => {
-            const container = Swal.getContainer();
-            if (container) container.style.zIndex = '100000';
-          }
+          confirmButtonColor: '#3b82f6'
         })
         localStorage.removeItem('token')
         window.location.href = '/login'
@@ -258,11 +239,7 @@ export default function NotificationsPage() {
           icon: 'error',
           title: 'Failed',
           text: errorMessage,
-          confirmButtonColor: '#ef4444',
-          didOpen: () => {
-            const container = Swal.getContainer();
-            if (container) container.style.zIndex = '100000';
-          }
+          confirmButtonColor: '#ef4444'
         })
       }
     } catch (error) {
@@ -271,11 +248,7 @@ export default function NotificationsPage() {
         icon: 'error',
         title: 'Error',
         text: 'Failed to send notification. Please check your connection and try again.',
-        confirmButtonColor: '#ef4444',
-        didOpen: () => {
-          const container = Swal.getContainer();
-          if (container) container.style.zIndex = '100000';
-        }
+        confirmButtonColor: '#ef4444'
       })
     } finally {
       setSending(false)
