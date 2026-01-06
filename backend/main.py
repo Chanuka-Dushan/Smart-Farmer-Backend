@@ -1685,8 +1685,8 @@ async def send_notification_endpoint(
         if not admin_email:
             raise HTTPException(status_code=401, detail="Invalid admin token")
         
-        # Fetch admin from database
-        admin = db.query(Admin).filter(Admin.email == admin_email).first()
+        # Fetch admin from database (admin model is called 'User')
+        admin = db.query(User).filter(User.email == admin_email).first()
         if not admin:
             raise HTTPException(status_code=401, detail="Admin not found")
         
@@ -2997,7 +2997,9 @@ async def create_payment_intent(
             detail=f"Stripe error: {str(e)}"
         )
     except Exception as e:
+        import traceback
         logger.error(f"Stripe payment intent creation failed: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create payment intent: {str(e)}"
