@@ -3243,9 +3243,11 @@ async def confirm_payment(
             raise HTTPException(status_code=403, detail="Not authorized")
         
         # Check payment status
+        logger.info(f"Payment intent status: {intent.status}")
+        
         if intent.status == 'succeeded':
             payment.status = "completed"
-            payment.stripe_charge_id = intent.latest_charge if hasattr(intent, 'latest_charge') else None
+            payment.stripe_charge_id = intent.latest_charge if hasattr(intent, 'latest_charge') and intent.latest_charge else None
             payment.updated_at = datetime.now(timezone.utc).isoformat()
             
             # Accept the offer after payment is confirmed
@@ -3271,11 +3273,26 @@ async def confirm_payment(
                     "status": payment.status
                 }
             }
+        elif intent.status in ['requires_payment_method', 'requires_confirmation', 'requires_action', 'processing']:
+            # Payment is still in progress - don't mark as failed
+            logger.info(f"Payment intent is still in progress with status: {intent.status}")
+            return {
+                "success": False,
+                "message": f"Payment is still in progress. Status: {intent.status}",
+                "status": intent.status,
+                "payment": {
+                    "id": payment.id,
+                    "amount": payment.amount,
+                    "status": payment.status
+                }
+            }
         else:
+            # Payment failed or was canceled
             payment.status = "failed"
             payment.updated_at = datetime.now(timezone.utc).isoformat()
             db.commit()
             
+            logger.warning(f"Payment not completed. Status: {intent.status}")
             raise HTTPException(
                 status_code=400,
                 detail=f"Payment not completed. Status: {intent.status}"
@@ -3286,11 +3303,17 @@ async def confirm_payment(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Stripe error: {str(e)}"
         )
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
         logger.error(f"Payment confirmation failed: {str(e)}")
+        logger.error(f"Traceback: {error_trace}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to confirm payment: {str(e)}"
+            detail=f"Failed to confirm payment: {str(e) if str(e) else 'Unknown error occurred'}"
         )
 
 @app.get("/api/payments/my-payments", response_model=list[PaymentResponse])
