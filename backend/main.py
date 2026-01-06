@@ -484,6 +484,7 @@ class PaymentIntentCreate(BaseModel):
 class PaymentConfirm(BaseModel):
     payment_intent_id: str
     save_card: Optional[bool] = False  # Whether to save the card after successful payment
+    return_url: Optional[str] = None  # Return URL for payment confirmation (required for 3D Secure)
 
 class PaymentResponse(BaseModel):
     id: int
@@ -3395,6 +3396,55 @@ async def confirm_payment(
         
         # Check payment status
         logger.info(f"Payment intent status: {intent.status}")
+        
+        # If payment requires confirmation or action, confirm it with return_url
+        if intent.status in ['requires_confirmation', 'requires_action']:
+            logger.info(f"Payment intent requires confirmation/action. Confirming with return_url...")
+            
+            # Prepare confirmation parameters
+            confirm_params = {}
+            
+            # Add return_url if provided (required for 3D Secure and other payment methods)
+            if payment_data.return_url:
+                confirm_params['return_url'] = payment_data.return_url
+            else:
+                # Use a default return URL if not provided
+                # This should be your app's deep link or web URL
+                confirm_params['return_url'] = 'smartfarmer://payment-return'
+                logger.warning("No return_url provided, using default: smartfarmer://payment-return")
+            
+            try:
+                # Confirm the payment intent
+                intent = stripe_module.PaymentIntent.confirm(
+                    payment_data.payment_intent_id,
+                    **confirm_params
+                )
+                logger.info(f"Payment intent confirmed. New status: {intent.status}")
+                
+                # If still requires action after confirmation, return next_action for client
+                if intent.status == 'requires_action' and hasattr(intent, 'next_action'):
+                    next_action = intent.next_action
+                    if next_action and hasattr(next_action, 'redirect_to_url'):
+                        redirect_url = next_action.redirect_to_url.url if hasattr(next_action.redirect_to_url, 'url') else None
+                        logger.info(f"Payment requires action. Redirect URL: {redirect_url}")
+                        return {
+                            "success": False,
+                            "requires_action": True,
+                            "status": intent.status,
+                            "redirect_url": redirect_url,
+                            "message": "Payment requires additional authentication",
+                            "payment": {
+                                "id": payment.id,
+                                "amount": payment.amount,
+                                "status": payment.status
+                            }
+                        }
+            except stripe_module.error.StripeError as confirm_error:
+                logger.error(f"Failed to confirm payment intent: {confirm_error}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Failed to confirm payment: {str(confirm_error)}"
+                )
         
         if intent.status == 'succeeded':
             payment.status = "completed"
