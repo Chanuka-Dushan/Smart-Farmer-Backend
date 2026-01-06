@@ -19,7 +19,7 @@ python-dotenv==1.0.0
 # Firebase
 firebase-admin==6.4.0
 
-# HTTP Client (for legacy support if needed)
+# HTTP Client
 requests==2.31.0
 
 # Utilities
@@ -40,3 +40,21 @@ tensorflow-cpu==2.16.1
 numpy==1.24.3
 pillow==10.1.0
 google-genai==0.8.0
+
+# ML Utilities & Evaluation
+scikit-learn==1.3.2
+matplotlib==3.8.2
+seaborn==0.13.0
+pandas==2.1.4
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+httpx==0.25.2
+
+# Monitoring & Logging
+python-json-logger==2.0.7
+
+# Payment Processing
+stripe==7.8.0
