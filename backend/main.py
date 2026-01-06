@@ -725,19 +725,14 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
 # --- 5. API Endpoints ---
 app = FastAPI()
 
-# ✅ CORS MUST BE HERE (TOP)
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost",
-        "http://127.0.0.1",
-    ],
-    allow_origin_regex=r"http://localhost:\d+|http://127\.0\.0\.1:\d+",
+    allow_origins=["farmerlk.me", "www.farmerlk.me", "http://localhost:3000", "http://localhost"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 
 from routes.recommendation import router as recommendation_router
