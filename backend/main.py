@@ -2904,16 +2904,16 @@ async def create_spare_part_request(
                     
                     # Send notifications to all sellers
                     try:
-                    result = send_multicast_notification(
-                        fcm_tokens=seller_tokens,
-                        title=notification_title,
-                        body=notification_body,
-                        data={
-                            "type": "spare_part_request",
-                            "request_id": str(new_request.id),
-                            "action": "open_request"
-                        }
-                    )
+                        result = send_multicast_notification(
+                            fcm_tokens=seller_tokens,
+                            title=notification_title,
+                            body=notification_body,
+                            data={
+                                "type": "spare_part_request",
+                                "request_id": str(new_request.id),
+                                "action": "open_request"
+                            }
+                        )
                         logger.info(f"✅ Successfully sent notifications to {len(seller_tokens)} sellers for request {new_request.id}")
                         logger.info(f"📊 Notification result: {result}")
                     except Exception as e:
