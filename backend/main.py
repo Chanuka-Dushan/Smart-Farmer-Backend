@@ -49,6 +49,21 @@ try:
     if STRIPE_SECRET_KEY and STRIPE_SECRET_KEY.strip():
         stripe.api_key = STRIPE_SECRET_KEY.strip()
         stripe_configured = True
+        
+        # Force Stripe to fully initialize all modules to prevent AttributeError
+        # This fixes the 'NoneType' object has no attribute 'Secret' error
+        try:
+            # Import apps module first to ensure it's initialized
+            import stripe.apps
+            # Now trigger lazy loading of object classes
+            _ = stripe.PaymentIntent
+            # Force import of object_classes module to ensure all classes are loaded
+            # This must happen after apps is imported
+            import stripe._object_classes
+        except (AttributeError, ImportError) as e:
+            logger.warning(f"Stripe module initialization warning: {e}")
+            # Continue anyway as this might not be critical
+        
         print("✓ Stripe configured successfully")
     else:
         stripe_configured = False
@@ -58,6 +73,11 @@ except ImportError:
     stripe_configured = False
     stripe = None
     print("⚠ Stripe library not available")
+except Exception as e:
+    stripe_configured = False
+    stripe = None
+    logger.error(f"⚠ Stripe initialization failed: {e}")
+    print(f"⚠ Stripe initialization failed: {e}")
 
 # Initialize DigitalOcean Spaces
 try:
@@ -2933,17 +2953,61 @@ async def create_payment_intent(
         raise HTTPException(status_code=400, detail="Payment already completed")
     
     try:
-        # Create Stripe payment intent (amount in cents)
-        intent = stripe.PaymentIntent.create(
-            amount=int(payment.amount * 100),  # Convert to cents
-            currency='usd',
-            metadata={
-                'payment_id': str(payment.id),
-                'offer_id': str(offer.id),
-                'user_id': str(current_user.id),
-                'seller_id': str(offer.seller_id)
-            }
-        )
+        # Workaround for Stripe library bug where stripe.apps is None
+        # Retry mechanism to handle AttributeError: 'NoneType' object has no attribute 'Secret'
+        max_retries = 2
+        intent = None
+        
+        for attempt in range(max_retries):
+            try:
+                # Ensure apps module is imported before creating payment intent
+                if attempt > 0:
+                    # On retry, force reload of modules
+                    import importlib
+                    if hasattr(stripe, 'apps'):
+                        importlib.reload(stripe.apps)
+                    import stripe._object_classes
+                    importlib.reload(stripe._object_classes)
+                else:
+                    # First attempt: just ensure apps is imported
+                    try:
+                        import stripe.apps
+                    except (AttributeError, ImportError):
+                        pass
+                
+                # Create Stripe payment intent (amount in cents)
+                intent = stripe.PaymentIntent.create(
+                    amount=int(payment.amount * 100),  # Convert to cents
+                    currency='usd',
+                    metadata={
+                        'payment_id': str(payment.id),
+                        'offer_id': str(offer.id),
+                        'user_id': str(current_user.id),
+                        'seller_id': str(offer.seller_id)
+                    }
+                )
+                break  # Success, exit retry loop
+                
+            except AttributeError as e:
+                if "'NoneType' object has no attribute 'Secret'" in str(e) and attempt < max_retries - 1:
+                    logger.warning(f"Stripe AttributeError on attempt {attempt + 1}, retrying...")
+                    # Force re-initialization of Stripe modules
+                    import importlib
+                    import sys
+                    # Get the API key before clearing modules
+                    api_key = stripe.api_key if hasattr(stripe, 'api_key') else os.getenv("STRIPE_SECRET_KEY", "").strip()
+                    # Clear cached modules
+                    modules_to_reload = [k for k in sys.modules.keys() if k.startswith('stripe.')]
+                    for mod_name in modules_to_reload:
+                        if mod_name in sys.modules:
+                            del sys.modules[mod_name]
+                    # Re-import stripe and reinitialize
+                    importlib.reload(stripe)
+                    if api_key:
+                        stripe.api_key = api_key
+                    continue
+                else:
+                    raise  # Re-raise if not the specific error or last attempt
         
         logger.info(f"Stripe payment intent created: {intent.id}")
         logger.info(f"Intent type: {type(intent)}")

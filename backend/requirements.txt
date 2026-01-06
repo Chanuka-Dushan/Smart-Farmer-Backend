@@ -57,4 +57,4 @@ httpx==0.25.2
 python-json-logger==2.0.7
 
 # Payment Processing
-stripe==7.8.0
+stripe>=8.0.0
