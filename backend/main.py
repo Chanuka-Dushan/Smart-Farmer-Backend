@@ -1429,6 +1429,7 @@ def unified_login(login_data: UserLogin, db: Session = Depends(get_db)):
             expires_delta=access_token_expires
         )
         
+        logger.info(f"User {app_user.id} login - profile_picture_url: '{app_user.profile_picture_url}'")
         return {
             "access_token": access_token,
             "token_type": "bearer",
@@ -2452,6 +2453,7 @@ async def auth_logout():
 @app.get("/api/users/me", response_model=AppUserResponse)
 def get_my_profile(current_user: AppUser = Depends(get_current_app_user)):
     """Get current user's profile"""
+    logger.info(f"Get profile for user {current_user.id} - profile_picture_url: '{current_user.profile_picture_url}'")
     return current_user
 
 @app.put("/api/users/me", response_model=AppUserResponse)
@@ -2644,8 +2646,8 @@ async def get_spare_part_requests(
     current_user_data: dict = Depends(get_current_user_or_seller),
     db: Session = Depends(get_db)
 ):
-    """Get all spare part requests - accessible by users, sellers, and admins"""
-    requests = db.query(SparePartRequest).all()
+    """Get all active spare part requests - accessible by users, sellers, and admins"""
+    requests = db.query(SparePartRequest).filter(SparePartRequest.status == "active").all()
     
     # Add user information to each request
     result = []
@@ -2807,13 +2809,22 @@ async def upload_profile_picture(
         
         # Update profile picture URL based on user type
         if user_type == "user":
+            old_url = user.profile_picture_url
             user.profile_picture_url = image_url
-            logger.info(f"User {user.id} updated profile picture: {image_url}")
+            logger.info(f"User {user.id} updated profile picture from '{old_url}' to '{image_url}'")
         elif user_type == "seller":
+            old_url = user.logo_url
             user.logo_url = image_url
-            logger.info(f"Seller {user.id} updated logo: {image_url}")
-        
+            logger.info(f"Seller {user.id} updated logo from '{old_url}' to '{image_url}'")
+
         db.commit()
+
+        # Verify the change was saved
+        db.refresh(user)
+        if user_type == "user":
+            logger.info(f"Verified user {user.id} profile_picture_url: '{user.profile_picture_url}'")
+        elif user_type == "seller":
+            logger.info(f"Verified seller {user.id} logo_url: '{user.logo_url}'")
         
         return {
             "url": image_url, 
@@ -2893,17 +2904,16 @@ async def create_spare_part_request(
                     
                     # Send notifications to all sellers
                     try:
-                        result = send_multicast_notification(
-                            tokens=seller_tokens,
-                            title=notification_title,
-                            body=notification_body,
-                            image_url=request_data.image_url,
-                            data={
-                                "type": "spare_part_request",
-                                "request_id": str(new_request.id),
-                                "action": "open_request"
-                            }
-                        )
+                    result = send_multicast_notification(
+                        fcm_tokens=seller_tokens,
+                        title=notification_title,
+                        body=notification_body,
+                        data={
+                            "type": "spare_part_request",
+                            "request_id": str(new_request.id),
+                            "action": "open_request"
+                        }
+                    )
                         logger.info(f"✅ Successfully sent notifications to {len(seller_tokens)} sellers for request {new_request.id}")
                         logger.info(f"📊 Notification result: {result}")
                     except Exception as e:
