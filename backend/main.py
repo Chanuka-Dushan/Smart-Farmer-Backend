@@ -167,6 +167,7 @@ class AppUser(Base):
     facebook_id = Column(String(100), nullable=True)
     is_deleted = Column(Boolean, default=False)
     is_banned = Column(Boolean, default=False)
+    stripe_customer_id = Column(String(255), nullable=True)  # Stripe customer ID for saved payment methods
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat(), onupdate=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -267,6 +268,22 @@ class Payment(Base):
     stripe_charge_id = Column(String(255), nullable=True)  # Stripe charge ID
     status = Column(String(50), default="pending")  # pending, completed, failed, refunded
     payment_method = Column(String(50), default="stripe")  # stripe, etc.
+    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+
+class SavedPaymentMethod(Base):
+    """Saved Payment Methods Model"""
+    __tablename__ = "saved_payment_methods"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)  # FK to app_users
+    stripe_payment_method_id = Column(String(255), nullable=False, unique=True)  # Stripe payment method ID
+    stripe_customer_id = Column(String(255), nullable=True)  # Stripe customer ID
+    card_brand = Column(String(50), nullable=True)  # visa, mastercard, etc.
+    card_last4 = Column(String(4), nullable=True)  # Last 4 digits
+    card_exp_month = Column(Integer, nullable=True)
+    card_exp_year = Column(Integer, nullable=True)
+    is_default = Column(Boolean, default=False)  # Default payment method
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -461,9 +478,12 @@ class SparePartOfferResponse(BaseModel):
 # Payment Models
 class PaymentIntentCreate(BaseModel):
     offer_id: int
+    save_card: Optional[bool] = False  # Whether to save the card for future use
+    payment_method_id: Optional[str] = None  # Use saved payment method if provided
 
 class PaymentConfirm(BaseModel):
     payment_intent_id: str
+    save_card: Optional[bool] = False  # Whether to save the card after successful payment
 
 class PaymentResponse(BaseModel):
     id: int
@@ -3122,6 +3142,53 @@ async def create_payment_intent(
     if payment.status == "completed":
         raise HTTPException(status_code=400, detail="Payment already completed")
     
+    # Get or create Stripe customer for saving payment methods
+    stripe_customer_id = current_user.stripe_customer_id
+    if (payment_data.save_card or payment_data.payment_method_id) and not stripe_customer_id:
+        try:
+            customer = stripe_module.Customer.create(
+                email=current_user.email,
+                name=f"{current_user.firstname} {current_user.lastname}",
+                metadata={'user_id': str(current_user.id)}
+            )
+            stripe_customer_id = customer.id
+            current_user.stripe_customer_id = stripe_customer_id
+            db.commit()
+            logger.info(f"Created Stripe customer {stripe_customer_id} for user {current_user.id}")
+        except Exception as e:
+            logger.error(f"Failed to create Stripe customer: {e}")
+            # Continue without customer if save_card is optional
+    
+    # Prepare payment intent parameters
+    intent_params = {
+        'amount': int(payment.amount * 100),  # Convert to cents
+        'currency': 'usd',  # Stripe doesn't support LKR, using USD
+        'metadata': {
+            'payment_id': str(payment.id),
+            'offer_id': str(offer.id),
+            'user_id': str(current_user.id),
+            'seller_id': str(offer.seller_id)
+        }
+    }
+    
+    # Use saved payment method if provided
+    if payment_data.payment_method_id:
+        saved_method = db.query(SavedPaymentMethod).filter(
+            SavedPaymentMethod.stripe_payment_method_id == payment_data.payment_method_id,
+            SavedPaymentMethod.user_id == current_user.id
+        ).first()
+        if saved_method:
+            intent_params['payment_method'] = payment_data.payment_method_id
+            intent_params['customer'] = saved_method.stripe_customer_id or stripe_customer_id
+            intent_params['confirmation_method'] = 'automatic'
+            intent_params['confirm'] = True
+        else:
+            raise HTTPException(status_code=404, detail="Saved payment method not found")
+    elif payment_data.save_card and stripe_customer_id:
+        # Setup for saving payment method
+        intent_params['setup_future_usage'] = 'off_session'
+        intent_params['customer'] = stripe_customer_id
+    
     try:
         # Workaround for Stripe library bug where stripe.apps is None
         # Ensure apps module is imported before creating payment intent
@@ -3134,21 +3201,8 @@ async def create_payment_intent(
         except (AttributeError, ImportError):
             pass
         
-        # Create Stripe payment intent (amount in cents)
-        # Note: Stripe doesn't support LKR directly, so we use USD
-        # The amount is already in LKR, so we need to convert it to USD
-        # For now, using USD as Stripe doesn't support LKR currency
-        # TODO: Consider using a payment gateway that supports LKR or implement currency conversion
-        intent = stripe_module.PaymentIntent.create(
-            amount=int(payment.amount * 100),  # Convert to cents
-            currency='usd',  # Stripe doesn't support LKR, using USD
-            metadata={
-                'payment_id': str(payment.id),
-                'offer_id': str(offer.id),
-                'user_id': str(current_user.id),
-                'seller_id': str(offer.seller_id)
-            }
-        )
+        # Create Stripe payment intent
+        intent = stripe_module.PaymentIntent.create(**intent_params)
         
         logger.info(f"Stripe payment intent created: {intent.id}")
         logger.info(f"Intent type: {type(intent)}")
@@ -3257,6 +3311,60 @@ async def confirm_payment(
             payment.stripe_charge_id = intent.latest_charge if hasattr(intent, 'latest_charge') and intent.latest_charge else None
             payment.updated_at = datetime.now(timezone.utc).isoformat()
             
+            # Save payment method if requested
+            if payment_data.save_card and intent.payment_method:
+                try:
+                    # Get or create Stripe customer
+                    stripe_customer_id = current_user.stripe_customer_id
+                    if not stripe_customer_id:
+                        customer = stripe_module.Customer.create(
+                            email=current_user.email,
+                            name=f"{current_user.firstname} {current_user.lastname}",
+                            metadata={'user_id': str(current_user.id)}
+                        )
+                        stripe_customer_id = customer.id
+                        current_user.stripe_customer_id = stripe_customer_id
+                        db.commit()
+                    
+                    # Attach payment method to customer
+                    stripe_module.PaymentMethod.attach(
+                        intent.payment_method,
+                        customer=stripe_customer_id
+                    )
+                    
+                    # Get payment method details
+                    pm = stripe_module.PaymentMethod.retrieve(intent.payment_method)
+                    card = pm.card if hasattr(pm, 'card') else None
+                    
+                    if card:
+                        # Check if already saved
+                        existing = db.query(SavedPaymentMethod).filter(
+                            SavedPaymentMethod.stripe_payment_method_id == intent.payment_method
+                        ).first()
+                        
+                        if not existing:
+                            # Set as default if user has no saved cards
+                            is_default = db.query(SavedPaymentMethod).filter(
+                                SavedPaymentMethod.user_id == current_user.id
+                            ).count() == 0
+                            
+                            saved_method = SavedPaymentMethod(
+                                user_id=current_user.id,
+                                stripe_payment_method_id=intent.payment_method,
+                                stripe_customer_id=stripe_customer_id,
+                                card_brand=card.brand if hasattr(card, 'brand') else None,
+                                card_last4=card.last4 if hasattr(card, 'last4') else None,
+                                card_exp_month=card.exp_month if hasattr(card, 'exp_month') else None,
+                                card_exp_year=card.exp_year if hasattr(card, 'exp_year') else None,
+                                is_default=is_default
+                            )
+                            db.add(saved_method)
+                            db.commit()
+                            logger.info(f"Saved payment method {intent.payment_method} for user {current_user.id}")
+                except Exception as e:
+                    logger.error(f"Failed to save payment method: {e}")
+                    # Don't fail the payment if saving card fails
+            
             # Accept the offer after payment is confirmed
             offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
             if offer and offer.status == "pending":
@@ -3322,6 +3430,108 @@ async def confirm_payment(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to confirm payment: {str(e) if str(e) else 'Unknown error occurred'}"
         )
+
+@app.get("/api/payments/saved-methods")
+async def get_saved_payment_methods(
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Get all saved payment methods for the current user"""
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    saved_methods = db.query(SavedPaymentMethod).filter(
+        SavedPaymentMethod.user_id == current_user.id
+    ).order_by(SavedPaymentMethod.is_default.desc(), SavedPaymentMethod.created_at.desc()).all()
+    
+    result = []
+    for method in saved_methods:
+        result.append({
+            "id": method.id,
+            "stripe_payment_method_id": method.stripe_payment_method_id,
+            "card_brand": method.card_brand,
+            "card_last4": method.card_last4,
+            "card_exp_month": method.card_exp_month,
+            "card_exp_year": method.card_exp_year,
+            "is_default": method.is_default,
+            "created_at": method.created_at
+        })
+    
+    return result
+
+@app.delete("/api/payments/saved-methods/{method_id}")
+async def delete_saved_payment_method(
+    method_id: int,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a saved payment method"""
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    import stripe as stripe_module
+    
+    saved_method = db.query(SavedPaymentMethod).filter(
+        SavedPaymentMethod.id == method_id,
+        SavedPaymentMethod.user_id == current_user.id
+    ).first()
+    
+    if not saved_method:
+        raise HTTPException(status_code=404, detail="Payment method not found")
+    
+    try:
+        # Detach payment method from Stripe customer
+        if saved_method.stripe_customer_id:
+            stripe_module.PaymentMethod.detach(saved_method.stripe_payment_method_id)
+    except Exception as e:
+        logger.error(f"Failed to detach payment method from Stripe: {e}")
+        # Continue with deletion even if Stripe detach fails
+    
+    # Delete from database
+    db.delete(saved_method)
+    db.commit()
+    
+    return {"message": "Payment method deleted successfully", "success": True}
+
+@app.put("/api/payments/saved-methods/{method_id}/set-default")
+async def set_default_payment_method(
+    method_id: int,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Set a saved payment method as default"""
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    saved_method = db.query(SavedPaymentMethod).filter(
+        SavedPaymentMethod.id == method_id,
+        SavedPaymentMethod.user_id == current_user.id
+    ).first()
+    
+    if not saved_method:
+        raise HTTPException(status_code=404, detail="Payment method not found")
+    
+    # Unset all other default methods for this user
+    db.query(SavedPaymentMethod).filter(
+        SavedPaymentMethod.user_id == current_user.id,
+        SavedPaymentMethod.id != method_id
+    ).update({"is_default": False})
+    
+    # Set this method as default
+    saved_method.is_default = True
+    saved_method.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    
+    return {"message": "Default payment method updated successfully", "success": True}
 
 @app.get("/api/payments/my-payments", response_model=list[PaymentResponse])
 async def get_my_payments(
