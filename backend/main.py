@@ -1680,8 +1680,15 @@ async def send_notification_endpoint(
         if notification_data.user_type not in ["all", "app_user", "seller"]:
             raise HTTPException(status_code=400, detail="Invalid user_type. Must be 'all', 'app_user', or 'seller'")
         
-        # Get admin from current_admin dict
-        admin = current_admin["user"]  # current_admin already contains the admin user object
+        # Get admin email from current_admin dict and fetch admin from database
+        admin_email = current_admin.get("email")
+        if not admin_email:
+            raise HTTPException(status_code=401, detail="Invalid admin token")
+        
+        # Fetch admin from database
+        admin = db.query(Admin).filter(Admin.email == admin_email).first()
+        if not admin:
+            raise HTTPException(status_code=401, detail="Admin not found")
         
         # Create notification record
         new_notification = Notification(
@@ -2939,19 +2946,42 @@ async def create_payment_intent(
         )
         
         logger.info(f"Stripe payment intent created: {intent.id}")
+        logger.info(f"Intent type: {type(intent)}")
+        logger.info(f"Intent object: {intent}")
+        logger.info(f"Intent attributes: {dir(intent)}")
         
         # Update payment record with intent ID
         payment.stripe_payment_intent_id = intent.id
         db.commit()
         
-        # Safely access client_secret
-        client_secret = getattr(intent, 'client_secret', None)
+        # Safely access client_secret with multiple methods
+        client_secret = None
+        
+        # Try direct attribute access
+        if hasattr(intent, 'client_secret'):
+            client_secret = intent.client_secret
+            logger.info(f"Got client_secret via direct access: {client_secret}")
+        
+        # Try getattr as fallback
         if not client_secret:
-            logger.error(f"Payment intent created but no client_secret returned: {intent}")
+            client_secret = getattr(intent, 'client_secret', None)
+            logger.info(f"Got client_secret via getattr: {client_secret}")
+        
+        # Try dictionary access if it's a dict-like object
+        if not client_secret and hasattr(intent, 'get'):
+            client_secret = intent.get('client_secret')
+            logger.info(f"Got client_secret via dict get: {client_secret}")
+        
+        if not client_secret:
+            logger.error(f"Payment intent created but no client_secret found!")
+            logger.error(f"Intent ID: {intent.id}")
+            logger.error(f"Intent dict: {intent.to_dict() if hasattr(intent, 'to_dict') else 'N/A'}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Payment intent created but client secret is missing"
             )
+        
+        logger.info(f"Successfully extracted client_secret: {client_secret[:20]}...")
         
         return {
             "client_secret": client_secret,
