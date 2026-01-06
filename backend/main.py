@@ -2850,7 +2850,13 @@ async def create_spare_part_request(
     
     # Send notification to all active sellers
     try:
-        from fcm_utils import send_multicast_notification, validate_fcm_config
+        from fcm_utils import send_multicast_notification, validate_fcm_config, initialize_firebase_admin
+        
+        # Ensure Firebase is initialized
+        try:
+            initialize_firebase_admin()
+        except Exception as init_error:
+            logger.warning(f"⚠️ Firebase initialization warning (may already be initialized): {init_error}")
         
         if validate_fcm_config():
             # Get all active sellers with FCM tokens
@@ -2860,38 +2866,34 @@ async def create_spare_part_request(
                 Seller.fcm_token != ''
             ).all()
             
+            logger.info(f"📢 Found {len(sellers)} active sellers with FCM tokens for request {new_request.id}")
+            
             if sellers:
                 seller_tokens = [seller.fcm_token for seller in sellers if seller.fcm_token]
+                
+                logger.info(f"📢 Preparing to send notifications to {len(seller_tokens)} sellers")
                 
                 if seller_tokens:
                     # Extract part name from title or description
                     part_name = request_data.title.replace('Spare Part Request: ', '').strip()
-                    if not part_name:
+                    if not part_name or part_name == request_data.title:
                         # Try to extract from description
                         desc_lines = request_data.description.split('\n')
                         for line in desc_lines:
                             if 'Part Name:' in line:
                                 part_name = line.split('Part Name:')[1].strip()
                                 break
+                        if not part_name or part_name == request_data.title:
+                            part_name = "Spare Part"
                     
                     notification_title = f"New Spare Part Request: {part_name}"
-                    notification_body = f"A new request has been posted. {request_data.description[:100]}..."
+                    notification_body = f"A new request has been posted. {request_data.description[:100]}..." if len(request_data.description) > 100 else request_data.description
                     
-                    # Prepare notification data
-                    notification_data = {
-                        "title": notification_title,
-                        "body": notification_body,
-                        "image": request_data.image_url if request_data.image_url else None,
-                        "data": {
-                            "type": "spare_part_request",
-                            "request_id": new_request.id,
-                            "action": "open_request"
-                        }
-                    }
+                    logger.info(f"📢 Notification details - Title: {notification_title}, Body: {notification_body[:50]}...")
                     
                     # Send notifications to all sellers
                     try:
-                        send_multicast_notification(
+                        result = send_multicast_notification(
                             tokens=seller_tokens,
                             title=notification_title,
                             body=notification_body,
@@ -2902,13 +2904,28 @@ async def create_spare_part_request(
                                 "action": "open_request"
                             }
                         )
-                        logger.info(f"✅ Sent notifications to {len(seller_tokens)} sellers for request {new_request.id}")
+                        logger.info(f"✅ Successfully sent notifications to {len(seller_tokens)} sellers for request {new_request.id}")
+                        logger.info(f"📊 Notification result: {result}")
                     except Exception as e:
+                        import traceback
+                        error_trace = traceback.format_exc()
                         logger.error(f"❌ Failed to send seller notifications: {e}")
+                        logger.error(f"❌ Traceback: {error_trace}")
+                else:
+                    logger.warning(f"⚠️ No valid FCM tokens found for sellers")
+            else:
+                logger.warning(f"⚠️ No active sellers with FCM tokens found")
         else:
             logger.warning("⚠️ FCM not configured, skipping seller notifications")
+            logger.warning("⚠️ Please check Firebase Admin SDK credentials")
+    except ImportError as e:
+        logger.error(f"❌ Failed to import FCM utilities: {e}")
+        logger.error("❌ Make sure fcm_utils.py is available and Firebase Admin SDK is installed")
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
         logger.error(f"❌ Error sending seller notifications: {e}")
+        logger.error(f"❌ Traceback: {error_trace}")
         # Don't fail the request creation if notification fails
     
     return new_request
