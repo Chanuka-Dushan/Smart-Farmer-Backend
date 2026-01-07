@@ -34,6 +34,7 @@ import json
 
 from routes.recommendation import router as recommendation_router
 
+from routes import blockchain_routes
 
 
 
@@ -271,6 +272,34 @@ class Payment(Base):
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
+
+    # ============= BLOCKCHAIN COMPONENT TABLES =============
+
+class BcManufacturer(Base):
+    __tablename__ = "bc_manufacturers"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    country = Column(String(100))
+    is_verified_on_chain = Column(Boolean, default=False)
+
+class BcPartsLedgerMap(Base):
+    __tablename__ = "bc_parts_ledger_map"
+    id = Column(Integer, primary_key=True, index=True)
+    part_id = Column(Integer, index=True) # Linking to teammate's parts table
+    blockchain_id = Column(String(255), unique=True, index=True, nullable=False)
+    manufacturer_id = Column(Integer)
+    minted_at = Column(DateTime, default=datetime.now(timezone.utc))
+    is_refurbished = Column(Boolean, default=False)
+
+class BcOwnershipRecord(Base):
+    __tablename__ = "bc_ownership_records"
+    id = Column(Integer, primary_key=True, index=True)
+    bc_part_id = Column(Integer)
+    current_owner_user_id = Column(Integer, nullable=True)
+    current_owner_seller_id = Column(Integer, nullable=True)
+    status = Column(String(50)) # <--- ADD THIS LINE
+    transfer_date = Column(DateTime, default=datetime.now(timezone.utc))
+    tx_hash = Column(String(255))
 class SavedPaymentMethod(Base):
     """Saved Payment Methods Model"""
     __tablename__ = "saved_payment_methods"
@@ -839,12 +868,13 @@ app = FastAPI()
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["farmerlk.me", "www.farmerlk.me", "http://localhost:3000", "http://localhost"],
+    allow_origins=["farmerlk.me", "www.farmerlk.me", "http://localhost:3000", "http://localhost", "http://localhost:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.include_router(blockchain_routes.router)
 
 from routes.recommendation import router as recommendation_router
 
