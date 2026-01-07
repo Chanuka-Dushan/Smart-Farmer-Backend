@@ -58,7 +58,7 @@ export default function ProductsPage() {
 
   const fetchRequests = async () => {
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('authToken')
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/spare-parts/requests`, {
         headers: {
           'Authorization': `Bearer ${token}`

@@ -245,3 +245,20 @@ logs/
 tmp/
 temp/
 *.tmp
+
+# ML Training Artifacts (keep these ignored)
+models/training_*/
+evaluation_reports/
+tensorboard_logs/
+
+# AI Knowledge Cache
+knowledge_cache.json
+
+# Uploaded files
+uploads/
+spare_parts/
+spare-parts/
+profile_pictures/
+
+# Note: ML model files (.h5, etc.) are tracked with Git LFS
+# See .gitattributes for LFS configuration

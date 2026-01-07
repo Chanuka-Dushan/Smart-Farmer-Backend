@@ -25,7 +25,8 @@ def migrate():
             ("facebook_id", "VARCHAR(255)"),
             ("is_social_login", "BOOLEAN DEFAULT FALSE"),
             ("is_deleted", "BOOLEAN DEFAULT FALSE"),
-            ("is_banned", "BOOLEAN DEFAULT FALSE")
+            ("is_banned", "BOOLEAN DEFAULT FALSE"),
+            ("stripe_customer_id", "VARCHAR(255)")
         ]
 
         for col_name, col_type in app_user_columns:
@@ -89,11 +90,46 @@ def migrate():
             print("Successfully ensured password_resets table exists.")
         except Exception as e:
             conn.rollback()
-            print(f"Error creating password_resets table: {e}")
+            error_msg = str(e).lower()
+            if "already exists" in error_msg:
+                print("password_resets table already exists, skipping.")
+            else:
+                print(f"Error creating password_resets table: {e}")
 
-    print("\nMigration process finished.")
+        # --- 4. Create saved_payment_methods table ---
+        print("\nChecking/Creating saved_payment_methods table...")
+        create_saved_payment_methods_sql = """
+        CREATE TABLE IF NOT EXISTS saved_payment_methods (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            stripe_payment_method_id VARCHAR(255) NOT NULL UNIQUE,
+            stripe_customer_id VARCHAR(255),
+            card_brand VARCHAR(50),
+            card_last4 VARCHAR(4),
+            card_exp_month INTEGER,
+            card_exp_year INTEGER,
+            is_default BOOLEAN DEFAULT FALSE,
+            created_at VARCHAR,
+            updated_at VARCHAR
+        )
+        """
+        # Adjust for SQLite if necessary
+        if "sqlite" in DATABASE_URL:
+            create_saved_payment_methods_sql = create_saved_payment_methods_sql.replace("SERIAL PRIMARY KEY", "INTEGER PRIMARY KEY AUTOINCREMENT")
+        
+        try:
+            conn.execute(text(create_saved_payment_methods_sql))
+            conn.commit()
+            print("Successfully ensured saved_payment_methods table exists.")
+        except Exception as e:
+            conn.rollback()
+            error_msg = str(e).lower()
+            if "already exists" in error_msg:
+                print("saved_payment_methods table already exists, skipping.")
+            else:
+                print(f"Error creating saved_payment_methods table: {e}")
 
-    print("\nMigration process finished.")
+    print("\n✅ Migration process finished.")
 
 if __name__ == "__main__":
     migrate()

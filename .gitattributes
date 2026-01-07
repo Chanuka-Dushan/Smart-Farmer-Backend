@@ -1,0 +1,6 @@
+# Smart Farmer Backend - Git LFS Configuration
+# Note: ML models are now stored in DigitalOcean Spaces instead of Git LFS
+
+# Removed .h5 tracking - models downloaded from Spaces at runtime
+*.pkl filter=lfs diff=lfs merge=lfs -text
+*.pickle filter=lfs diff=lfs merge=lfs -text
