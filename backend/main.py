@@ -31,7 +31,7 @@ from PIL import Image
 import requests
 import json
 
-from routes.recommendation import router as recommendation_router
+
 
 
 
@@ -2622,6 +2622,45 @@ def get_all_parts(db: Session = Depends(get_db)):
     """Get all spare parts"""
     return db.query(Part).all()
 
+@app.get("/api/parts/search-by-name")
+def search_part_by_name_and_brand(
+    name: str,
+    brand: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    # Exact match
+    query = db.query(Part).filter(Part.name.ilike(name))
+
+    if brand:
+        query = query.filter(Part.brand.ilike(brand))
+
+    part = query.first()
+    if part:
+        return {
+            "id": part.id,
+            "name": part.name,
+            "brand": part.brand
+        }
+
+    # Partial match fallback
+    query = db.query(Part).filter(Part.name.ilike(f"%{name}%"))
+
+    if brand:
+        query = query.filter(Part.brand.ilike(f"%{brand}%"))
+
+    part = query.first()
+    if not part:
+        raise HTTPException(status_code=404, detail="Part not found")
+
+    return {
+        "id": part.id,
+        "name": part.name,
+        "brand": part.brand
+    }
+
+
+
+
 
 @app.get("/api/parts/{part_id}", response_model=PartResponse)
 def get_part_by_id(part_id: int, db: Session = Depends(get_db)):
@@ -3108,3 +3147,10 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+
+# ============= RECOMMENDATION ROUTES (MUST BE LAST) =============
+
+from routes.recommendation import router as recommendation_router
+app.include_router(recommendation_router)
