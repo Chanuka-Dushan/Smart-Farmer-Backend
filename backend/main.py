@@ -55,6 +55,21 @@ try:
     if STRIPE_SECRET_KEY and STRIPE_SECRET_KEY.strip():
         stripe.api_key = STRIPE_SECRET_KEY.strip()
         stripe_configured = True
+        
+        # Force Stripe to fully initialize all modules to prevent AttributeError
+        # This fixes the 'NoneType' object has no attribute 'Secret' error
+        try:
+            # Import apps module first to ensure it's initialized
+            import stripe.apps
+            # Now trigger lazy loading of object classes
+            _ = stripe.PaymentIntent
+            # Force import of object_classes module to ensure all classes are loaded
+            # This must happen after apps is imported
+            import stripe._object_classes
+        except (AttributeError, ImportError) as e:
+            logger.warning(f"Stripe module initialization warning: {e}")
+            # Continue anyway as this might not be critical
+        
         print("✓ Stripe configured successfully")
     else:
         stripe_configured = False
@@ -64,6 +79,11 @@ except ImportError:
     stripe_configured = False
     stripe = None
     print("⚠ Stripe library not available")
+except Exception as e:
+    stripe_configured = False
+    stripe = None
+    logger.error(f"⚠ Stripe initialization failed: {e}")
+    print(f"⚠ Stripe initialization failed: {e}")
 
 # Initialize DigitalOcean Spaces
 try:
@@ -148,6 +168,7 @@ class AppUser(Base):
     facebook_id = Column(String(100), nullable=True)
     is_deleted = Column(Boolean, default=False)
     is_banned = Column(Boolean, default=False)
+    stripe_customer_id = Column(String(255), nullable=True)  # Stripe customer ID for saved payment methods
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat(), onupdate=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -279,6 +300,21 @@ class BcOwnershipRecord(Base):
     status = Column(String(50)) # <--- ADD THIS LINE
     transfer_date = Column(DateTime, default=datetime.now(timezone.utc))
     tx_hash = Column(String(255))
+class SavedPaymentMethod(Base):
+    """Saved Payment Methods Model"""
+    __tablename__ = "saved_payment_methods"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)  # FK to app_users
+    stripe_payment_method_id = Column(String(255), nullable=False, unique=True)  # Stripe payment method ID
+    stripe_customer_id = Column(String(255), nullable=True)  # Stripe customer ID
+    card_brand = Column(String(50), nullable=True)  # visa, mastercard, etc.
+    card_last4 = Column(String(4), nullable=True)  # Last 4 digits
+    card_exp_month = Column(Integer, nullable=True)
+    card_exp_year = Column(Integer, nullable=True)
+    is_default = Column(Boolean, default=False)  # Default payment method
+    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
 # Create the tables automatically
 Base.metadata.create_all(bind=engine)
@@ -464,13 +500,20 @@ class SparePartOfferResponse(BaseModel):
     price: float
     description: str
     status: str
+    created_at: Optional[str] = None
+    seller: Optional[dict] = None  # Seller information
+    seller: Optional[dict] = None  # Seller information
 
 # Payment Models
 class PaymentIntentCreate(BaseModel):
     offer_id: int
+    save_card: Optional[bool] = False  # Whether to save the card for future use
+    payment_method_id: Optional[str] = None  # Use saved payment method if provided
 
 class PaymentConfirm(BaseModel):
     payment_intent_id: str
+    save_card: Optional[bool] = False  # Whether to save the card after successful payment
+    return_url: Optional[str] = None  # Return URL for payment confirmation (required for 3D Secure)
 
 class PaymentResponse(BaseModel):
     id: int
@@ -1417,6 +1460,7 @@ def unified_login(login_data: UserLogin, db: Session = Depends(get_db)):
             expires_delta=access_token_expires
         )
         
+        logger.info(f"User {app_user.id} login - profile_picture_url: '{app_user.profile_picture_url}'")
         return {
             "access_token": access_token,
             "token_type": "bearer",
@@ -2440,6 +2484,7 @@ async def auth_logout():
 @app.get("/api/users/me", response_model=AppUserResponse)
 def get_my_profile(current_user: AppUser = Depends(get_current_app_user)):
     """Get current user's profile"""
+    logger.info(f"Get profile for user {current_user.id} - profile_picture_url: '{current_user.profile_picture_url}'")
     return current_user
 
 @app.put("/api/users/me", response_model=AppUserResponse)
@@ -2632,8 +2677,8 @@ async def get_spare_part_requests(
     current_user_data: dict = Depends(get_current_user_or_seller),
     db: Session = Depends(get_db)
 ):
-    """Get all spare part requests - accessible by users, sellers, and admins"""
-    requests = db.query(SparePartRequest).all()
+    """Get all active spare part requests - accessible by users, sellers, and admins"""
+    requests = db.query(SparePartRequest).filter(SparePartRequest.status == "active").all()
     
     # Add user information to each request
     result = []
@@ -2795,13 +2840,22 @@ async def upload_profile_picture(
         
         # Update profile picture URL based on user type
         if user_type == "user":
+            old_url = user.profile_picture_url
             user.profile_picture_url = image_url
-            logger.info(f"User {user.id} updated profile picture: {image_url}")
+            logger.info(f"User {user.id} updated profile picture from '{old_url}' to '{image_url}'")
         elif user_type == "seller":
+            old_url = user.logo_url
             user.logo_url = image_url
-            logger.info(f"Seller {user.id} updated logo: {image_url}")
-        
+            logger.info(f"Seller {user.id} updated logo from '{old_url}' to '{image_url}'")
+
         db.commit()
+
+        # Verify the change was saved
+        db.refresh(user)
+        if user_type == "user":
+            logger.info(f"Verified user {user.id} profile_picture_url: '{user.profile_picture_url}'")
+        elif user_type == "seller":
+            logger.info(f"Verified seller {user.id} logo_url: '{user.logo_url}'")
         
         return {
             "url": image_url, 
@@ -2823,7 +2877,7 @@ async def create_spare_part_request(
     current_user: AppUser = Depends(get_current_app_user),
     db: Session = Depends(get_db)
 ):
-    """Create a new spare part request"""
+    """Create a new spare part request and notify all sellers"""
     new_request = SparePartRequest(
         user_id=current_user.id,
         title=request_data.title,
@@ -2835,6 +2889,85 @@ async def create_spare_part_request(
     db.add(new_request)
     db.commit()
     db.refresh(new_request)
+    
+    # Send notification to all active sellers
+    try:
+        from fcm_utils import send_multicast_notification, validate_fcm_config, initialize_firebase_admin
+        
+        # Ensure Firebase is initialized
+        try:
+            initialize_firebase_admin()
+        except Exception as init_error:
+            logger.warning(f"⚠️ Firebase initialization warning (may already be initialized): {init_error}")
+        
+        if validate_fcm_config():
+            # Get all active sellers with FCM tokens
+            sellers = db.query(Seller).filter(
+                Seller.is_active == True,
+                Seller.fcm_token.isnot(None),
+                Seller.fcm_token != ''
+            ).all()
+            
+            logger.info(f"📢 Found {len(sellers)} active sellers with FCM tokens for request {new_request.id}")
+            
+            if sellers:
+                seller_tokens = [seller.fcm_token for seller in sellers if seller.fcm_token]
+                
+                logger.info(f"📢 Preparing to send notifications to {len(seller_tokens)} sellers")
+                
+                if seller_tokens:
+                    # Extract part name from title or description
+                    part_name = request_data.title.replace('Spare Part Request: ', '').strip()
+                    if not part_name or part_name == request_data.title:
+                        # Try to extract from description
+                        desc_lines = request_data.description.split('\n')
+                        for line in desc_lines:
+                            if 'Part Name:' in line:
+                                part_name = line.split('Part Name:')[1].strip()
+                                break
+                        if not part_name or part_name == request_data.title:
+                            part_name = "Spare Part"
+                    
+                    notification_title = f"New Spare Part Request: {part_name}"
+                    notification_body = f"A new request has been posted. {request_data.description[:100]}..." if len(request_data.description) > 100 else request_data.description
+                    
+                    logger.info(f"📢 Notification details - Title: {notification_title}, Body: {notification_body[:50]}...")
+                    
+                    # Send notifications to all sellers
+                    try:
+                        result = send_multicast_notification(
+                            fcm_tokens=seller_tokens,
+                            title=notification_title,
+                            body=notification_body,
+                            data={
+                                "type": "spare_part_request",
+                                "request_id": str(new_request.id),
+                                "action": "open_request"
+                            }
+                        )
+                        logger.info(f"✅ Successfully sent notifications to {len(seller_tokens)} sellers for request {new_request.id}")
+                        logger.info(f"📊 Notification result: {result}")
+                    except Exception as e:
+                        import traceback
+                        error_trace = traceback.format_exc()
+                        logger.error(f"❌ Failed to send seller notifications: {e}")
+                        logger.error(f"❌ Traceback: {error_trace}")
+                else:
+                    logger.warning(f"⚠️ No valid FCM tokens found for sellers")
+            else:
+                logger.warning(f"⚠️ No active sellers with FCM tokens found")
+        else:
+            logger.warning("⚠️ FCM not configured, skipping seller notifications")
+            logger.warning("⚠️ Please check Firebase Admin SDK credentials")
+    except ImportError as e:
+        logger.error(f"❌ Failed to import FCM utilities: {e}")
+        logger.error("❌ Make sure fcm_utils.py is available and Firebase Admin SDK is installed")
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        logger.error(f"❌ Error sending seller notifications: {e}")
+        logger.error(f"❌ Traceback: {error_trace}")
+        # Don't fail the request creation if notification fails
     
     return new_request
 
@@ -3084,7 +3217,17 @@ async def create_payment_intent(
     db: Session = Depends(get_db)
 ):
     """Create a Stripe payment intent for 5% deposit"""
-    if not stripe_configured or stripe is None:
+    # Check stripe configuration - use stripe_configured flag to avoid UnboundLocalError
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    # Import stripe module reference to avoid UnboundLocalError
+    import stripe as stripe_module
+    
+    if stripe_module is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Payment service not configured"
@@ -3120,18 +3263,67 @@ async def create_payment_intent(
     if payment.status == "completed":
         raise HTTPException(status_code=400, detail="Payment already completed")
     
+    # Get or create Stripe customer for saving payment methods
+    stripe_customer_id = current_user.stripe_customer_id
+    if (payment_data.save_card or payment_data.payment_method_id) and not stripe_customer_id:
+        try:
+            customer = stripe_module.Customer.create(
+                email=current_user.email,
+                name=f"{current_user.firstname} {current_user.lastname}",
+                metadata={'user_id': str(current_user.id)}
+            )
+            stripe_customer_id = customer.id
+            current_user.stripe_customer_id = stripe_customer_id
+            db.commit()
+            logger.info(f"Created Stripe customer {stripe_customer_id} for user {current_user.id}")
+        except Exception as e:
+            logger.error(f"Failed to create Stripe customer: {e}")
+            # Continue without customer if save_card is optional
+    
+    # Prepare payment intent parameters
+    intent_params = {
+        'amount': int(payment.amount * 100),  # Convert to cents
+        'currency': 'usd',  # Stripe doesn't support LKR, using USD
+        'metadata': {
+            'payment_id': str(payment.id),
+            'offer_id': str(offer.id),
+            'user_id': str(current_user.id),
+            'seller_id': str(offer.seller_id)
+        }
+    }
+    
+    # Use saved payment method if provided
+    if payment_data.payment_method_id:
+        saved_method = db.query(SavedPaymentMethod).filter(
+            SavedPaymentMethod.stripe_payment_method_id == payment_data.payment_method_id,
+            SavedPaymentMethod.user_id == current_user.id
+        ).first()
+        if saved_method:
+            intent_params['payment_method'] = payment_data.payment_method_id
+            intent_params['customer'] = saved_method.stripe_customer_id or stripe_customer_id
+            intent_params['confirmation_method'] = 'automatic'
+            intent_params['confirm'] = True
+        else:
+            raise HTTPException(status_code=404, detail="Saved payment method not found")
+    elif payment_data.save_card and stripe_customer_id:
+        # Setup for saving payment method
+        intent_params['setup_future_usage'] = 'off_session'
+        intent_params['customer'] = stripe_customer_id
+    
     try:
-        # Create Stripe payment intent (amount in cents)
-        intent = stripe.PaymentIntent.create(
-            amount=int(payment.amount * 100),  # Convert to cents
-            currency='usd',
-            metadata={
-                'payment_id': str(payment.id),
-                'offer_id': str(offer.id),
-                'user_id': str(current_user.id),
-                'seller_id': str(offer.seller_id)
-            }
-        )
+        # Workaround for Stripe library bug where stripe.apps is None
+        # Ensure apps module is imported before creating payment intent
+        try:
+            # Use getattr to access apps without triggering local variable detection
+            if not hasattr(stripe_module, 'apps') or stripe_module.apps is None:
+                # Force import of apps module
+                import importlib
+                importlib.import_module('stripe.apps')
+        except (AttributeError, ImportError):
+            pass
+        
+        # Create Stripe payment intent
+        intent = stripe_module.PaymentIntent.create(**intent_params)
         
         logger.info(f"Stripe payment intent created: {intent.id}")
         logger.info(f"Intent type: {type(intent)}")
@@ -3178,7 +3370,7 @@ async def create_payment_intent(
             "total_amount": payment.total_amount,
             "payment_id": payment.id
         }
-    except stripe.error.StripeError as e:
+    except stripe_module.error.StripeError as e:
         logger.error(f"Stripe error during payment intent creation: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -3200,7 +3392,17 @@ async def confirm_payment(
     db: Session = Depends(get_db)
 ):
     """Confirm payment completion"""
-    if not stripe_configured or stripe is None:
+    # Check stripe configuration - use stripe_configured flag to avoid UnboundLocalError
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    # Import stripe module reference to avoid UnboundLocalError
+    import stripe as stripe_module
+    
+    if stripe_module is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Payment service not configured"
@@ -3208,7 +3410,7 @@ async def confirm_payment(
     
     try:
         # Retrieve payment intent from Stripe
-        intent = stripe.PaymentIntent.retrieve(payment_data.payment_intent_id)
+        intent = stripe_module.PaymentIntent.retrieve(payment_data.payment_intent_id)
         
         # Find payment record
         payment = db.query(Payment).filter(
@@ -3223,10 +3425,115 @@ async def confirm_payment(
             raise HTTPException(status_code=403, detail="Not authorized")
         
         # Check payment status
+        logger.info(f"Payment intent status: {intent.status}")
+        
+        # If payment requires confirmation or action, confirm it with return_url
+        if intent.status in ['requires_confirmation', 'requires_action']:
+            logger.info(f"Payment intent requires confirmation/action. Confirming with return_url...")
+            
+            # Prepare confirmation parameters
+            confirm_params = {}
+            
+            # Add return_url if provided (required for 3D Secure and other payment methods)
+            if payment_data.return_url:
+                confirm_params['return_url'] = payment_data.return_url
+            else:
+                # Use a default return URL if not provided
+                # This should be your app's deep link or web URL
+                confirm_params['return_url'] = 'smartfarmer://payment-return'
+                logger.warning("No return_url provided, using default: smartfarmer://payment-return")
+            
+            try:
+                # Confirm the payment intent
+                intent = stripe_module.PaymentIntent.confirm(
+                    payment_data.payment_intent_id,
+                    **confirm_params
+                )
+                logger.info(f"Payment intent confirmed. New status: {intent.status}")
+                
+                # If still requires action after confirmation, return next_action for client
+                if intent.status == 'requires_action' and hasattr(intent, 'next_action'):
+                    next_action = intent.next_action
+                    if next_action and hasattr(next_action, 'redirect_to_url'):
+                        redirect_url = next_action.redirect_to_url.url if hasattr(next_action.redirect_to_url, 'url') else None
+                        logger.info(f"Payment requires action. Redirect URL: {redirect_url}")
+                        return {
+                            "success": False,
+                            "requires_action": True,
+                            "status": intent.status,
+                            "redirect_url": redirect_url,
+                            "message": "Payment requires additional authentication",
+                            "payment": {
+                                "id": payment.id,
+                                "amount": payment.amount,
+                                "status": payment.status
+                            }
+                        }
+            except stripe_module.error.StripeError as confirm_error:
+                logger.error(f"Failed to confirm payment intent: {confirm_error}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Failed to confirm payment: {str(confirm_error)}"
+                )
+        
         if intent.status == 'succeeded':
             payment.status = "completed"
-            payment.stripe_charge_id = intent.latest_charge if hasattr(intent, 'latest_charge') else None
+            payment.stripe_charge_id = intent.latest_charge if hasattr(intent, 'latest_charge') and intent.latest_charge else None
             payment.updated_at = datetime.now(timezone.utc).isoformat()
+            
+            # Save payment method if requested
+            if payment_data.save_card and intent.payment_method:
+                try:
+                    # Get or create Stripe customer
+                    stripe_customer_id = current_user.stripe_customer_id
+                    if not stripe_customer_id:
+                        customer = stripe_module.Customer.create(
+                            email=current_user.email,
+                            name=f"{current_user.firstname} {current_user.lastname}",
+                            metadata={'user_id': str(current_user.id)}
+                        )
+                        stripe_customer_id = customer.id
+                        current_user.stripe_customer_id = stripe_customer_id
+                        db.commit()
+                    
+                    # Attach payment method to customer
+                    stripe_module.PaymentMethod.attach(
+                        intent.payment_method,
+                        customer=stripe_customer_id
+                    )
+                    
+                    # Get payment method details
+                    pm = stripe_module.PaymentMethod.retrieve(intent.payment_method)
+                    card = pm.card if hasattr(pm, 'card') else None
+                    
+                    if card:
+                        # Check if already saved
+                        existing = db.query(SavedPaymentMethod).filter(
+                            SavedPaymentMethod.stripe_payment_method_id == intent.payment_method
+                        ).first()
+                        
+                        if not existing:
+                            # Set as default if user has no saved cards
+                            is_default = db.query(SavedPaymentMethod).filter(
+                                SavedPaymentMethod.user_id == current_user.id
+                            ).count() == 0
+                            
+                            saved_method = SavedPaymentMethod(
+                                user_id=current_user.id,
+                                stripe_payment_method_id=intent.payment_method,
+                                stripe_customer_id=stripe_customer_id,
+                                card_brand=card.brand if hasattr(card, 'brand') else None,
+                                card_last4=card.last4 if hasattr(card, 'last4') else None,
+                                card_exp_month=card.exp_month if hasattr(card, 'exp_month') else None,
+                                card_exp_year=card.exp_year if hasattr(card, 'exp_year') else None,
+                                is_default=is_default
+                            )
+                            db.add(saved_method)
+                            db.commit()
+                            logger.info(f"Saved payment method {intent.payment_method} for user {current_user.id}")
+                except Exception as e:
+                    logger.error(f"Failed to save payment method: {e}")
+                    # Don't fail the payment if saving card fails
             
             # Accept the offer after payment is confirmed
             offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
@@ -3242,9 +3549,34 @@ async def confirm_payment(
             
             db.commit()
             
+            # Get offer details for response
+            offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
+            
             return {
                 "success": True,
-                "message": "Payment confirmed successfully",
+                "message": "Payment confirmed successfully. Offer has been accepted.",
+                "payment": {
+                    "id": payment.id,
+                    "amount": float(payment.amount) if payment.amount else 0.0,
+                    "total_amount": float(payment.total_amount) if payment.total_amount else 0.0,
+                    "status": payment.status,
+                    "stripe_payment_intent_id": payment.stripe_payment_intent_id,
+                    "stripe_charge_id": payment.stripe_charge_id,
+                    "created_at": payment.created_at,
+                },
+                "offer": {
+                    "id": offer.id if offer else None,
+                    "status": offer.status if offer else None,
+                    "accepted": offer.status == "accepted" if offer else False
+                } if offer else None
+            }
+        elif intent.status in ['requires_payment_method', 'requires_confirmation', 'requires_action', 'processing']:
+            # Payment is still in progress - don't mark as failed
+            logger.info(f"Payment intent is still in progress with status: {intent.status}")
+            return {
+                "success": False,
+                "message": f"Payment is still in progress. Status: {intent.status}",
+                "status": intent.status,
                 "payment": {
                     "id": payment.id,
                     "amount": payment.amount,
@@ -3252,26 +3584,136 @@ async def confirm_payment(
                 }
             }
         else:
+            # Payment failed or was canceled
             payment.status = "failed"
             payment.updated_at = datetime.now(timezone.utc).isoformat()
             db.commit()
             
+            logger.warning(f"Payment not completed. Status: {intent.status}")
             raise HTTPException(
                 status_code=400,
                 detail=f"Payment not completed. Status: {intent.status}"
             )
-    except stripe.error.StripeError as e:
+    except stripe_module.error.StripeError as e:
         logger.error(f"Stripe error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Stripe error: {str(e)}"
         )
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
         logger.error(f"Payment confirmation failed: {str(e)}")
+        logger.error(f"Traceback: {error_trace}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to confirm payment: {str(e)}"
+            detail=f"Failed to confirm payment: {str(e) if str(e) else 'Unknown error occurred'}"
         )
+
+@app.get("/api/payments/saved-methods")
+async def get_saved_payment_methods(
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Get all saved payment methods for the current user"""
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    saved_methods = db.query(SavedPaymentMethod).filter(
+        SavedPaymentMethod.user_id == current_user.id
+    ).order_by(SavedPaymentMethod.is_default.desc(), SavedPaymentMethod.created_at.desc()).all()
+    
+    result = []
+    for method in saved_methods:
+        result.append({
+            "id": method.id,
+            "stripe_payment_method_id": method.stripe_payment_method_id,
+            "card_brand": method.card_brand,
+            "card_last4": method.card_last4,
+            "card_exp_month": method.card_exp_month,
+            "card_exp_year": method.card_exp_year,
+            "is_default": method.is_default,
+            "created_at": method.created_at
+        })
+    
+    return result
+
+@app.delete("/api/payments/saved-methods/{method_id}")
+async def delete_saved_payment_method(
+    method_id: int,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a saved payment method"""
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    import stripe as stripe_module
+    
+    saved_method = db.query(SavedPaymentMethod).filter(
+        SavedPaymentMethod.id == method_id,
+        SavedPaymentMethod.user_id == current_user.id
+    ).first()
+    
+    if not saved_method:
+        raise HTTPException(status_code=404, detail="Payment method not found")
+    
+    try:
+        # Detach payment method from Stripe customer
+        if saved_method.stripe_customer_id:
+            stripe_module.PaymentMethod.detach(saved_method.stripe_payment_method_id)
+    except Exception as e:
+        logger.error(f"Failed to detach payment method from Stripe: {e}")
+        # Continue with deletion even if Stripe detach fails
+    
+    # Delete from database
+    db.delete(saved_method)
+    db.commit()
+    
+    return {"message": "Payment method deleted successfully", "success": True}
+
+@app.put("/api/payments/saved-methods/{method_id}/set-default")
+async def set_default_payment_method(
+    method_id: int,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Set a saved payment method as default"""
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    saved_method = db.query(SavedPaymentMethod).filter(
+        SavedPaymentMethod.id == method_id,
+        SavedPaymentMethod.user_id == current_user.id
+    ).first()
+    
+    if not saved_method:
+        raise HTTPException(status_code=404, detail="Payment method not found")
+    
+    # Unset all other default methods for this user
+    db.query(SavedPaymentMethod).filter(
+        SavedPaymentMethod.user_id == current_user.id,
+        SavedPaymentMethod.id != method_id
+    ).update({"is_default": False})
+    
+    # Set this method as default
+    saved_method.is_default = True
+    saved_method.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    
+    return {"message": "Default payment method updated successfully", "success": True}
 
 @app.get("/api/payments/my-payments", response_model=list[PaymentResponse])
 async def get_my_payments(
@@ -3506,62 +3948,90 @@ async def get_user_stats(
 @app.get("/admin/transactions")
 async def get_all_transactions(
     skip: int = 0,
-    limit: int = 100,
+    limit: int = 1000,  # Increased default limit to show more transactions
     status: Optional[str] = None,
     current_admin: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get all payment transactions (Admin only)"""
+    from sqlalchemy import func
+    
     query = db.query(Payment)
     
     # Filter by status if provided
     if status:
         query = query.filter(Payment.status == status)
     
-    # Get transactions with pagination
-    transactions = query.order_by(Payment.created_at.desc()).offset(skip).limit(limit).all()
+    # Get total count for pagination
+    total_count = query.count()
+    
+    # Get transactions with pagination (no limit if limit is very high)
+    if limit >= 1000:
+        transactions = query.order_by(Payment.created_at.desc()).all()
+    else:
+        transactions = query.order_by(Payment.created_at.desc()).offset(skip).limit(limit).all()
     
     result = []
     for payment in transactions:
-        offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
-        user = db.query(AppUser).filter(AppUser.id == payment.user_id).first()
-        seller = db.query(Seller).filter(Seller.id == payment.seller_id).first()
-        
-        transaction_dict = {
-            "id": payment.id,
-            "offer_id": payment.offer_id,
-            "user_id": payment.user_id,
-            "seller_id": payment.seller_id,
-            "amount": payment.amount,
-            "total_amount": payment.total_amount,
-            "stripe_payment_intent_id": payment.stripe_payment_intent_id,
-            "stripe_charge_id": payment.stripe_charge_id,
-            "status": payment.status,
-            "payment_method": payment.payment_method,
-            "created_at": payment.created_at,
-            "updated_at": payment.updated_at,
-            "offer": {
-                "id": offer.id,
-                "price": offer.price,
-                "description": offer.description,
-                "status": offer.status
-            } if offer else None,
-            "user": {
-                "id": user.id,
-                "firstname": user.firstname,
-                "lastname": user.lastname,
-                "email": user.email
-            } if user else None,
-            "seller": {
-                "id": seller.id,
-                "business_name": seller.business_name,
-                "owner_firstname": seller.owner_firstname,
-                "owner_lastname": seller.owner_lastname
-            } if seller else None
-        }
-        result.append(transaction_dict)
+        try:
+            offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
+            user = db.query(AppUser).filter(AppUser.id == payment.user_id).first()
+            seller = db.query(Seller).filter(Seller.id == payment.seller_id).first()
+            
+            transaction_dict = {
+                "id": payment.id,
+                "offer_id": payment.offer_id,
+                "user_id": payment.user_id,
+                "seller_id": payment.seller_id,
+                "amount": float(payment.amount) if payment.amount else 0.0,
+                "total_amount": float(payment.total_amount) if payment.total_amount else 0.0,
+                "stripe_payment_intent_id": payment.stripe_payment_intent_id,
+                "stripe_charge_id": payment.stripe_charge_id,
+                "status": payment.status or "unknown",
+                "payment_method": payment.payment_method or "unknown",
+                "created_at": payment.created_at,
+                "updated_at": payment.updated_at,
+                "offer": {
+                    "id": offer.id,
+                    "price": float(offer.price) if offer.price else 0.0,
+                    "description": offer.description or "",
+                    "status": offer.status or "unknown"
+                } if offer else None,
+                "user": {
+                    "id": user.id,
+                    "firstname": user.firstname or "",
+                    "lastname": user.lastname or "",
+                    "email": user.email or ""
+                } if user else None,
+                "seller": {
+                    "id": seller.id,
+                    "business_name": seller.business_name or "",
+                    "owner_firstname": seller.owner_firstname or "",
+                    "owner_lastname": seller.owner_lastname or ""
+                } if seller else None
+            }
+            result.append(transaction_dict)
+        except Exception as e:
+            logger.error(f"Error processing transaction {payment.id}: {e}")
+            # Still include the transaction with minimal data
+            result.append({
+                "id": payment.id,
+                "offer_id": payment.offer_id,
+                "user_id": payment.user_id,
+                "seller_id": payment.seller_id,
+                "amount": float(payment.amount) if payment.amount else 0.0,
+                "total_amount": float(payment.total_amount) if payment.total_amount else 0.0,
+                "status": payment.status or "unknown",
+                "created_at": payment.created_at,
+                "error": "Failed to load related data"
+            })
     
-    return result
+    return {
+        "transactions": result,
+        "total": total_count,
+        "skip": skip,
+        "limit": limit
+    }
 
 @app.get("/admin/transactions/stats")
 async def get_transaction_stats(
