@@ -21,6 +21,11 @@ A comprehensive agricultural management platform with AI-powered spare parts lif
 - Model evaluation and metrics tracking
 - Automated data augmentation
 
+## System Architecture Diagram
+
+<img width="1677" height="803" alt="image" src="https://github.com/user-attachments/assets/5ae42a6f-0d4e-4588-aa19-1994326380c6" />
+
+
 ## 📁 Project Structure
 
 ```
