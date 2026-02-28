@@ -87,6 +87,32 @@ class TestLifecyclePredictionAPI:
         # Should either reject or handle gracefully
         assert response.status_code in [200, 400, 422, 500]
 
+    def test_identify_part_success(self, client, sample_image):
+        """Test successful part identification"""
+        response = client.post(
+            "/api/identify-part",
+            files={"image": ("test.png", sample_image, "image/png")}
+        )
+        assert response.status_code in [200, 503]
+        if response.status_code == 200:
+            data = response.json()
+            assert "label" in data
+            assert "confidence" in data
+
+    def test_identify_part_missing(self, client):
+        """Request without image should fail validation"""
+        response = client.post("/api/identify-part")
+        assert response.status_code == 422
+
+    def test_identify_part_invalid_image(self, client):
+        """Test API with invalid image for identification"""
+        invalid_file = BytesIO(b"not an image")
+        response = client.post(
+            "/api/identify-part",
+            files={"image": ("test.txt", invalid_file, "text/plain")}
+        )
+        assert response.status_code in [400, 422, 500]
+
 
 @pytest.mark.integration
 class TestHealthEndpoints:

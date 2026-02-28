@@ -124,6 +124,34 @@ class TestUtilityFunctions:
         assert clip_prediction(1.5) == 1.0
         assert clip_prediction(-0.5) == 0.0
         assert clip_prediction(0.5) == 0.5
+
+
+class TestPartIdentifier:
+    """Unit tests for the PartIdentifier helper"""
+
+    def test_part_identifier_dummy(self, tmp_path):
+        pytest.importorskip("torch")
+        from ml_utils import PartIdentifier
+        import torch
+        import torch.nn as nn
+        import numpy as np
+
+        # create a trivial linear model
+        model = nn.Sequential(nn.Flatten(), nn.Linear(224 * 224 * 3, 5))
+        model_path = tmp_path / "dummy.pth"
+        torch.save(model, str(model_path))
+
+        labels = {str(i): f"class{i}" for i in range(5)}
+        label_file = tmp_path / "labels.json"
+        label_file.write_text(json.dumps(labels))
+
+        pi = PartIdentifier(str(model_path), str(label_file))
+        assert pi.load_model()
+
+        arr = np.zeros((1, 224, 224, 3), dtype=np.float32)
+        label, conf = pi.predict(arr)
+        assert label in labels.values()
+        assert isinstance(conf, float)
     
     def test_model_metadata_save_load(self):
         with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as f:

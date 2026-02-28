@@ -39,6 +39,11 @@ MODEL_PATH = os.getenv("MODEL_PATH", str(MODEL_DIR / f"smart_farmer_vision_{MODE
 MIN_PREDICTION_CONFIDENCE = float(os.getenv("MIN_PREDICTION_CONFIDENCE", "0.7"))
 DISABLE_TENSORFLOW = os.getenv("DISABLE_TENSORFLOW", "false").lower() == "true"
 
+# Part Identification (PyTorch) Configuration
+PART_MODEL_PATH = os.getenv("PART_MODEL_PATH", str(MODEL_DIR / "part_identification_model.pth"))
+PART_LABEL_PATH = os.getenv("PART_LABEL_PATH", str(MODEL_DIR / "part_identification_label.json"))
+DISABLE_PART_IDENTIFICATION = os.getenv("DISABLE_PART_IDENTIFICATION", "false").lower() == "true"
+
 # Monitoring & Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 ENABLE_PREDICTION_LOGGING = os.getenv("ENABLE_PREDICTION_LOGGING", "true").lower() == "true"
@@ -108,6 +113,11 @@ def validate_config():
     # Check model file exists
     if not DISABLE_TENSORFLOW and not Path(MODEL_PATH).exists():
         warnings.append(f"Model file not found: {MODEL_PATH}")
+    # Check part identification model
+    if not DISABLE_PART_IDENTIFICATION and not Path(PART_MODEL_PATH).exists():
+        warnings.append(f"Part identification model file not found: {PART_MODEL_PATH}")
+    if not Path(PART_LABEL_PATH).exists():
+        warnings.append(f"Part identification label file not found: {PART_LABEL_PATH}")
     
     return errors, warnings
 
