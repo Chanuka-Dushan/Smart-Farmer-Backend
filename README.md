@@ -377,6 +377,7 @@ vercel deploy --prod
 
 ### Spare Parts & Predictions
 - `POST /api/predict-lifecycle` - AI-powered lifecycle prediction
+- `POST /api/identify-part` - Upload image and identify spare part type (mobile app)
 - `POST /api/spare-parts/requests` - Create part request
 - `POST /api/spare-parts/offers` - Create offer on request
 
@@ -436,6 +437,19 @@ response = requests.post(
 result = response.json()
 print(f"Condition: {result['condition']}")
 print(f"Remaining hours: {result['estimated_remaining_hours']}")
+```
+
+# Identify Spare Part from Image
+```python
+import requests
+
+response = requests.post(
+    "http://localhost:8000/api/identify-part",
+    files={"image": open("part_image.jpg", "rb")}
+)
+
+info = response.json()
+print(f"Identified part: {info['label']} (confidence {info['confidence']:.2%})")
 ```
 
 ## 🧪 Testing

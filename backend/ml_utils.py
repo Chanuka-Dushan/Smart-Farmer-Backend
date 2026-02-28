@@ -11,6 +11,7 @@ from typing import Tuple, Dict, Optional, Any
 from PIL import Image
 from io import BytesIO
 
+# TensorFlow utilities
 try:
     import tensorflow as tf
     from tensorflow.keras.models import load_model
@@ -21,6 +22,14 @@ try:
 except ImportError:
     TENSORFLOW_AVAILABLE = False
     logging.warning("TensorFlow or sklearn not available - ML features will be limited")
+
+# PyTorch utilities for part identification
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    logging.warning("PyTorch not available - part identification features will be disabled")
 
 logger = logging.getLogger(__name__)
 
@@ -267,9 +276,130 @@ class ImagePreprocessor:
             return False, f"Invalid image: {str(e)}"
 
 
+
 def clip_prediction(value: float, min_val: float = 0.0, max_val: float = 1.0) -> float:
     """Safely clip prediction values to valid range"""
     return float(np.clip(value, min_val, max_val))
+
+
+class PartIdentifier:
+    """Wrapper around a PyTorch model for identifying parts from an image."""
+
+    def __init__(self, model_path: str, label_path: str):
+        self.model_path = model_path
+        self.label_path = label_path
+        self.model = None
+        self.labels: Dict[str, str] = {}
+
+    def load_model(self) -> bool:
+        """Load the PyTorch model and labels."""
+        if not TORCH_AVAILABLE:
+            logger.error("PyTorch not available")
+            return False
+
+        try:
+            from torchvision import models
+            import torch.nn as nn
+            
+            # load state dict or whole model
+            loaded = torch.load(self.model_path, map_location='cpu')
+            
+            if isinstance(loaded, dict) and 'state_dict' in loaded:
+                # if checkpoint structure
+                state_dict = loaded['state_dict']
+            else:
+                state_dict = loaded
+            
+            # Check if it's a state dict (OrderedDict/dict) or a full model
+            if isinstance(state_dict, dict) and not hasattr(state_dict, 'eval'):
+                # It's a state dict, need to reconstruct the model
+                logger.info("Detected state dict, reconstructing ResNet50 model...")
+                
+                # Create ResNet50 model
+                model = models.resnet50(weights=None)
+                
+                # Replace the final fully connected layer to match the saved model
+                # Based on state dict analysis: fc[0]=BN(2048), fc[2]=Linear(2048,512), fc[4]=BN(512), fc[6]=Linear(512,64)
+                num_classes = 64  # From the state dict analysis
+                model.fc = nn.Sequential(
+                    nn.BatchNorm1d(2048),
+                    nn.Identity(),  # placeholder for fc[1]
+                    nn.Linear(2048, 512),
+                    nn.Identity(),  # placeholder for fc[3]
+                    nn.BatchNorm1d(512),
+                    nn.Identity(),  # placeholder for fc[5]
+                    nn.Linear(512, num_classes)
+                )
+                
+                # Load the state dict into the model
+                # Use strict=False to avoid issues with batch norm tracking
+                incompatible = model.load_state_dict(state_dict, strict=False)
+                if incompatible.missing_keys:
+                    logger.warning(f"Missing keys in state_dict: {incompatible.missing_keys}")
+                if incompatible.unexpected_keys:
+                    logger.warning(f"Unexpected keys in state_dict: {incompatible.unexpected_keys}")
+                    
+                self.model = model
+            elif hasattr(state_dict, 'eval'):
+                # It's already a full model
+                self.model = state_dict
+            else:
+                logger.error(f"Loaded object is not a PyTorch model (type: {type(state_dict).__name__})")
+                return False
+            
+            # Set model to eval mode
+            self.model.eval()
+            logger.info("Model loaded and set to eval mode")
+
+            # Load labels
+            with open(self.label_path, 'r', encoding='utf-8') as f:
+                self.labels = json.load(f)
+            logger.info(f"Part identification labels loaded ({len(self.labels)} classes)")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load part identification model: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def predict(self, image_array: np.ndarray, top_k: int = 1) -> Tuple[str, float]:
+        """Run inference on a preprocessed numpy image array.
+
+        Args:
+            image_array: array with shape (1, H, W, C) normalized to [0,1]
+            top_k: return top-k predictions (default: 1 for backward compatibility)
+
+        Returns:
+            If top_k=1: Tuple[label, confidence]
+            If top_k>1: List[Tuple[label, confidence]] ordered by confidence
+        """
+        if self.model is None:
+            raise ValueError("Model not loaded")
+
+        # convert to tensor and re-order channels
+        tensor = torch.from_numpy(image_array).permute(0, 3, 1, 2).float()
+        with torch.no_grad():
+            logits = self.model(tensor)
+            if isinstance(logits, tuple) or isinstance(logits, list):
+                logits = logits[0]
+            probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+        
+        # Get top-k predictions
+        top_k = min(top_k, len(probs))  # Don't exceed number of classes
+        top_indices = np.argsort(probs)[::-1][:top_k]
+        
+        predictions = []
+        for idx in top_indices:
+            idx = int(idx)
+            label = self.labels.get(str(idx), str(idx))
+            confidence = float(probs[idx])
+            predictions.append((label, confidence))
+        
+        # For backward compatibility, return single tuple if top_k=1
+        if top_k == 1:
+            return predictions[0]
+        else:
+            return predictions
 
 
 def load_model_metadata(model_path: str) -> Optional[Dict[str, Any]]:

@@ -32,6 +32,17 @@ from PIL import Image
 import requests
 import json
 
+# ML helpers (import later so environment variables are loaded)
+from ml_utils import ImagePreprocessor, PredictionValidator, clip_prediction, PartIdentifier, TORCH_AVAILABLE
+from config import (
+    MIN_PREDICTION_CONFIDENCE,
+    MODEL_PATH,
+    DISABLE_TENSORFLOW,
+    PART_MODEL_PATH,
+    PART_LABEL_PATH,
+    DISABLE_PART_IDENTIFICATION,
+)
+
 from routes.recommendation import router as recommendation_router
 
 from routes import blockchain_routes
@@ -971,6 +982,24 @@ elif DISABLE_TENSORFLOW:
 else:
     print("⚠️ TensorFlow not available. Using Simulation Mode for vision analysis.")
 
+# --- Part Identification Model (PyTorch) ---
+part_identifier = None
+if TORCH_AVAILABLE and not DISABLE_PART_IDENTIFICATION:
+    try:
+        part_identifier = PartIdentifier(PART_MODEL_PATH, PART_LABEL_PATH)
+        if part_identifier.load_model():
+            logger.info(f"✓ Part identification model loaded: {PART_MODEL_PATH}")
+        else:
+            part_identifier = None
+    except Exception as e:
+        part_identifier = None
+        logger.warning(f"Part identification model not loaded: {e}")
+else:
+    if DISABLE_PART_IDENTIFICATION:
+        logger.info("⚠️ Part identification disabled by configuration")
+    else:
+        logger.info("⚠️ PyTorch not available: part identification disabled")
+
 # --- Historical Stress Engine ---
 def get_historical_stress_factor(location: str, part_name: str):
     """
@@ -1264,6 +1293,89 @@ async def predict_lifecycle(
             status_code=500, 
             detail=f"Prediction failed: {str(e)}"
         )
+
+# --- Part Identification Endpoint ---
+@app.post("/api/identify-part")
+async def identify_part(image: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Accept an image and return the identified part with full DB details.
+
+    Returns top-5 predictions with part details, compatibility, and description.
+    """
+    logger.info(f"📸 Part identification request: {image.filename} ({image.content_type})")
+
+    # Read the uploaded image
+    img_data = await image.read()
+
+    # Validate and preprocess
+    pre = ImagePreprocessor(target_size=(224, 224))
+    valid, msg = pre.validate_image(img_data)
+    if not valid:
+        logger.warning(f"⚠️ Invalid image for part identification: {msg}")
+        raise HTTPException(status_code=400, detail=f"Invalid image: {msg}")
+
+    arr = pre.preprocess_image(img_data)
+    if arr is None:
+        raise HTTPException(status_code=500, detail="Image preprocessing failed")
+
+    if not part_identifier:
+        raise HTTPException(status_code=503, detail="Part identification model unavailable")
+
+    try:
+        # Get top 5 predictions ranked by confidence
+        # Now returns part_number directly (not model label)
+        predictions = part_identifier.predict(arr, top_k=5)
+        
+        # Build detailed response for each prediction
+        from models.identification import IdentificationPart, IdentificationPartCompatibility, IdentificationTractor
+        
+        results = []
+        for part_number, confidence in predictions:
+            # Query part from DB
+            part = db.query(IdentificationPart).filter(
+                IdentificationPart.part_number == part_number
+            ).first()
+            
+            if not part:
+                logger.warning(f"⚠️ Part not found in DB for part_number: {part_number}")
+                continue
+            
+            # Query compatibility tractors
+            compat_records = db.query(IdentificationTractor).join(
+                IdentificationPartCompatibility,
+                IdentificationPartCompatibility.tractor_id == IdentificationTractor.id
+            ).filter(
+                IdentificationPartCompatibility.part_id == part.id
+            ).all()
+            
+            compatibility = [t.name for t in compat_records]
+            
+            # Build response object
+            part_response = {
+                "name": part.name,
+                "partNumber": part.part_number,
+                "compatibility": compatibility,
+                "confidence": round(confidence * 100, 2),  # Convert to percentage
+                "image": part.image,
+                "description": part.description or "",
+                "model3dVideo": part.model_3d_vid or ""
+            }
+            results.append(part_response)
+        
+        if not results:
+            logger.warning("⚠️ No valid parts found for predictions")
+            raise HTTPException(status_code=404, detail="No parts found in database")
+        
+        logger.info(f"✓ Identified {len(results)} parts, top: {results[0]['name']} ({results[0]['confidence']}%)")
+        return {"predictions": results}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Part identification error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Identification error: {str(e)}")
+
 if not spaces_configured:
     logger.warning("⚠ Spaces not configured - uploads will fail")
     # Keep local directories for fallback

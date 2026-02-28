@@ -24,3 +24,6 @@ gunicorn==21.2.0
 
 # Additional dependencies
 email-validator==2.1.0
+# PyTorch for part identification model
+torch==2.10.0+cpu
+torchvision==0.25.0+cpu
