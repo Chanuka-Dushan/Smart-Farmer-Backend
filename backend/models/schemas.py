@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List
+from typing import Optional
 from datetime import datetime
 
 # ============= Mobile App User Schemas =============
@@ -157,41 +157,3 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str = Field(..., min_length=6)
 
-# ============= Blockchain & Ledger Schemas (Your Component) =============
-
-class LedgerHistoryEntry(BaseModel):
-    """Represents a single event in the blockchain lifecycle"""
-    event: str
-    date: str
-
-class PartVerificationResponse(BaseModel):
-    """Full details returned after scanning a part QR"""
-    status: str
-    name: str
-    brand: str
-    manufacturer: str
-    serial: str
-    condition: str
-    history: List[LedgerHistoryEntry]
-
-class PartRegisterRequest(BaseModel):
-    """Request to mint a new digital twin on the ledger"""
-    part_id: int
-    serial_number: str = Field(..., min_length=5)
-    manufacturer_id: int
-
-class TransferRequest(BaseModel):
-    """Request to transfer ownership of a part"""
-    bc_map_id: int
-    buyer_id: int
-
-class MaintenanceLogRequest(BaseModel):
-    """Request to add a repair/maintenance record to the ledger"""
-    bc_map_id: int
-    details: str = Field(..., min_length=10)
-
-class RatingRequest(BaseModel):
-    """Request to submit a rating for a vendor/seller"""
-    seller_id: int
-    rating: int = Field(..., ge=1, le=5)
-    comment: Optional[str] = None
