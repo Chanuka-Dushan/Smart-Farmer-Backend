@@ -118,6 +118,12 @@ def auth_login(login_data: UserLoginRequest, db: Session = Depends(get_db)):
             detail="Your account has been suspended"
         )
     
+    # Update FCM token if provided
+    if login_data.fcm_token:
+        user.fcm_token = login_data.fcm_token
+        db.commit()
+        db.refresh(user)
+    
     # Create access token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(

@@ -1,4 +1,5 @@
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form
@@ -31,8 +32,20 @@ from PIL import Image
 import requests
 import json
 
+# ML helpers (import later so environment variables are loaded)
+from ml_utils import ImagePreprocessor, PredictionValidator, clip_prediction, PartIdentifier, TORCH_AVAILABLE
+from config import (
+    MIN_PREDICTION_CONFIDENCE,
+    MODEL_PATH,
+    DISABLE_TENSORFLOW,
+    PART_MODEL_PATH,
+    PART_LABEL_PATH,
+    DISABLE_PART_IDENTIFICATION,
+)
 
+from routes.recommendation import router as recommendation_router
 
+from routes import blockchain_routes
 
 
 
@@ -42,6 +55,46 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Initialize Stripe
+try:
+    import stripe
+    STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+    STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY")
+
+    # More robust Stripe configuration check
+    if STRIPE_SECRET_KEY and STRIPE_SECRET_KEY.strip():
+        stripe.api_key = STRIPE_SECRET_KEY.strip()
+        stripe_configured = True
+        
+        # Force Stripe to fully initialize all modules to prevent AttributeError
+        # This fixes the 'NoneType' object has no attribute 'Secret' error
+        try:
+            # Import apps module first to ensure it's initialized
+            import stripe.apps
+            # Now trigger lazy loading of object classes
+            _ = stripe.PaymentIntent
+            # Force import of object_classes module to ensure all classes are loaded
+            # This must happen after apps is imported
+            import stripe._object_classes
+        except (AttributeError, ImportError) as e:
+            logger.warning(f"Stripe module initialization warning: {e}")
+            # Continue anyway as this might not be critical
+        
+        print("✓ Stripe configured successfully")
+    else:
+        stripe_configured = False
+        stripe = None
+        print("⚠ Stripe not configured - STRIPE_SECRET_KEY is missing or empty")
+except ImportError:
+    stripe_configured = False
+    stripe = None
+    print("⚠ Stripe library not available")
+except Exception as e:
+    stripe_configured = False
+    stripe = None
+    logger.error(f"⚠ Stripe initialization failed: {e}")
+    print(f"⚠ Stripe initialization failed: {e}")
 
 # Initialize DigitalOcean Spaces
 try:
@@ -76,7 +129,7 @@ except ImportError:
 # --- JWT Configuration ---
 SECRET_KEY = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
+ACCESS_TOKEN_EXPIRE_MINUTES = 43200  # 30 days (30 * 24 * 60 minutes)
 
 # --- Password Hashing ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -126,6 +179,7 @@ class AppUser(Base):
     facebook_id = Column(String(100), nullable=True)
     is_deleted = Column(Boolean, default=False)
     is_banned = Column(Boolean, default=False)
+    stripe_customer_id = Column(String(255), nullable=True)  # Stripe customer ID for saved payment methods
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat(), onupdate=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -212,6 +266,66 @@ class Part(Base):
     image_url = Column(String(500), nullable=True)
 
 
+class Payment(Base):
+    """Payment Model for Spare Part Orders"""
+    __tablename__ = "payments"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    offer_id = Column(Integer, nullable=False)  # FK to spare_part_offers
+    user_id = Column(Integer, nullable=False)  # FK to app_users
+    seller_id = Column(Integer, nullable=False)  # FK to sellers
+    amount = Column(Float, nullable=False)  # Payment amount (5% of offer price)
+    total_amount = Column(Float, nullable=False)  # Total offer amount
+    stripe_payment_intent_id = Column(String(255), nullable=True)  # Stripe payment intent ID
+    stripe_charge_id = Column(String(255), nullable=True)  # Stripe charge ID
+    status = Column(String(50), default="pending")  # pending, completed, failed, refunded
+    payment_method = Column(String(50), default="stripe")  # stripe, etc.
+    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+
+
+    # ============= BLOCKCHAIN COMPONENT TABLES =============
+
+class BcManufacturer(Base):
+    __tablename__ = "bc_manufacturers"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    country = Column(String(100))
+    is_verified_on_chain = Column(Boolean, default=False)
+
+class BcPartsLedgerMap(Base):
+    __tablename__ = "bc_parts_ledger_map"
+    id = Column(Integer, primary_key=True, index=True)
+    part_id = Column(Integer, index=True) # Linking to teammate's parts table
+    blockchain_id = Column(String(255), unique=True, index=True, nullable=False)
+    manufacturer_id = Column(Integer)
+    minted_at = Column(DateTime, default=datetime.now(timezone.utc))
+    is_refurbished = Column(Boolean, default=False)
+
+class BcOwnershipRecord(Base):
+    __tablename__ = "bc_ownership_records"
+    id = Column(Integer, primary_key=True, index=True)
+    bc_part_id = Column(Integer)
+    current_owner_user_id = Column(Integer, nullable=True)
+    current_owner_seller_id = Column(Integer, nullable=True)
+    status = Column(String(50)) # <--- ADD THIS LINE
+    transfer_date = Column(DateTime, default=datetime.now(timezone.utc))
+    tx_hash = Column(String(255))
+class SavedPaymentMethod(Base):
+    """Saved Payment Methods Model"""
+    __tablename__ = "saved_payment_methods"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)  # FK to app_users
+    stripe_payment_method_id = Column(String(255), nullable=False, unique=True)  # Stripe payment method ID
+    stripe_customer_id = Column(String(255), nullable=True)  # Stripe customer ID
+    card_brand = Column(String(50), nullable=True)  # visa, mastercard, etc.
+    card_last4 = Column(String(4), nullable=True)  # Last 4 digits
+    card_exp_month = Column(Integer, nullable=True)
+    card_exp_year = Column(Integer, nullable=True)
+    is_default = Column(Boolean, default=False)  # Default payment method
+    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
 # Create the tables automatically
 Base.metadata.create_all(bind=engine)
@@ -397,6 +511,40 @@ class SparePartOfferResponse(BaseModel):
     price: float
     description: str
     status: str
+    created_at: Optional[str] = None
+    seller: Optional[dict] = None  # Seller information
+    seller: Optional[dict] = None  # Seller information
+
+# Payment Models
+class PaymentIntentCreate(BaseModel):
+    offer_id: int
+    save_card: Optional[bool] = False  # Whether to save the card for future use
+    payment_method_id: Optional[str] = None  # Use saved payment method if provided
+
+class PaymentConfirm(BaseModel):
+    payment_intent_id: str
+    save_card: Optional[bool] = False  # Whether to save the card after successful payment
+    return_url: Optional[str] = None  # Return URL for payment confirmation (required for 3D Secure)
+
+class PaymentResponse(BaseModel):
+    id: int
+    offer_id: int
+    user_id: int
+    seller_id: int
+    amount: float
+    total_amount: float
+    stripe_payment_intent_id: Optional[str]
+    stripe_charge_id: Optional[str]
+    status: str
+    payment_method: str
+    created_at: str
+    updated_at: str
+    offer: Optional[dict] = None
+    user: Optional[dict] = None
+    seller: Optional[dict] = None
+
+    class Config:
+        from_attributes = True
     created_at: str
     seller: Optional[dict] = None
     request: Optional[dict] = None  # Add request info
@@ -715,30 +863,29 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
     except jwt.ExpiredSignatureError:
         logger.warning(f"Expired token from {request.client.host if request.client else 'unknown'}")
         raise HTTPException(status_code=401, detail="Token has expired")
-    except jwt.InvalidTokenError as e:
-        logger.warning(f"Invalid token error: {type(e).__name__} - {str(e)}")
+    except jwt.JWTError as e:
+        logger.warning(f"JWT error: {type(e).__name__} - {str(e)}")
         raise HTTPException(status_code=401, detail="Invalid or malformed token")
     except JWTError as e:
         logger.warning(f"JWT decode error: {type(e).__name__} - {str(e)}")
         raise HTTPException(status_code=401, detail="Token validation failed")
+    except Exception as e:
+        logger.warning(f"Unexpected token error: {type(e).__name__} - {str(e)}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
 
 # --- 5. API Endpoints ---
 app = FastAPI()
 
-# ✅ CORS MUST BE HERE (TOP)
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost",
-        "http://127.0.0.1",
-    ],
-    allow_origin_regex=r"http://localhost:\d+|http://127\.0\.0\.1:\d+",
+    allow_origins=["farmerlk.me", "www.farmerlk.me", "http://localhost:3000", "http://localhost", "http://localhost:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
+app.include_router(blockchain_routes.router)
 
 from routes.recommendation import router as recommendation_router
 
@@ -754,13 +901,14 @@ except ImportError as e:
     print(f"⚠ AI Knowledge not available: {e}")
 
 # --- Weather API Configuration ---
-WEATHER_API_KEY = "d304e6f2db12ee21033d9aa1213a508f"
+WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
+if not WEATHER_API_KEY:
+    logger.warning("⚠️ WEATHER_API_KEY not set - weather forecasting will be disabled")
 
-# --- Vision Model Configuration ---
-# To disable TensorFlow in production (recommended for Heroku/similar platforms):
-# Set environment variable: DISABLE_TENSORFLOW=true
-# This prevents worker timeouts and improves startup performance
-MODEL_PATH = "smart_farmer_vision_v1.h5"
+# --- Vision# Model Configuration
+MODEL_VERSION = os.getenv("MODEL_VERSION", "v1.0")
+MODEL_PATH = os.getenv("MODEL_PATH", "smart_farmer_vision_v1.h5")  # Fixed: removed models/ prefix
+MIN_PREDICTION_CONFIDENCE = float(os.getenv("MIN_PREDICTION_CONFIDENCE", "0.7"))
 
 # Check if we should disable TensorFlow in production (for performance)
 # Only disable if explicitly set via environment variable
@@ -774,6 +922,49 @@ DISABLE_TENSORFLOW = (
 
 print(f"🔧 TensorFlow disabled: {DISABLE_TENSORFLOW}")
 
+def download_model_from_spaces():
+    """Download ML model from DigitalOcean Spaces if not present locally"""
+    import requests
+    from pathlib import Path
+    
+    # Check if model already exists
+    if Path(MODEL_PATH).exists():
+        logger.info(f"✓ Model already exists locally: {MODEL_PATH}")
+        return True
+    
+    # Check if MODEL_URL is set
+    model_url = os.getenv("MODEL_URL")
+    if not model_url:
+        logger.warning("⚠️ MODEL_URL not set - cannot download model from Spaces")
+        return False
+    
+    try:
+        logger.info(f"📥 Downloading model from Spaces: {model_url}")
+        
+        # Create models directory if needed
+        Path(MODEL_PATH).parent.mkdir(parents=True, exist_ok=True)
+        
+        # Download model
+        response = requests.get(model_url, timeout=60)
+        response.raise_for_status()
+        
+        # Save model
+        with open(MODEL_PATH, 'wb') as f:
+            f.write(response.content)
+        
+        file_size = Path(MODEL_PATH).stat().st_size / 1024 / 1024
+        logger.info(f"✅ Model downloaded successfully ({file_size:.2f} MB)")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to download model: {e}")
+        return False
+
+# Try to download model from Spaces if not present
+if not DISABLE_TENSORFLOW and tensorflow_available:
+    download_model_from_spaces()
+
+# Load Vision Model
 cnn_model = None
 if tensorflow_available and not DISABLE_TENSORFLOW:
     try:
@@ -782,7 +973,7 @@ if tensorflow_available and not DISABLE_TENSORFLOW:
         os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN optimizations that cause warnings
 
         cnn_model = tf.keras.models.load_model(MODEL_PATH)
-        print(f"✅ Vision Model Loaded: {MODEL_PATH}")
+        logger.info(f"✓ Vision Model Loaded: {MODEL_PATH}")
     except Exception as e:
         cnn_model = None
         print(f"⚠️ Vision Model Not Found ({e}). Using Simulation Mode.")
@@ -790,6 +981,24 @@ elif DISABLE_TENSORFLOW:
     print("⚠️ TensorFlow disabled for production performance. Using Simulation Mode.")
 else:
     print("⚠️ TensorFlow not available. Using Simulation Mode for vision analysis.")
+
+# --- Part Identification Model (PyTorch) ---
+part_identifier = None
+if TORCH_AVAILABLE and not DISABLE_PART_IDENTIFICATION:
+    try:
+        part_identifier = PartIdentifier(PART_MODEL_PATH, PART_LABEL_PATH)
+        if part_identifier.load_model():
+            logger.info(f"✓ Part identification model loaded: {PART_MODEL_PATH}")
+        else:
+            part_identifier = None
+    except Exception as e:
+        part_identifier = None
+        logger.warning(f"Part identification model not loaded: {e}")
+else:
+    if DISABLE_PART_IDENTIFICATION:
+        logger.info("⚠️ Part identification disabled by configuration")
+    else:
+        logger.info("⚠️ PyTorch not available: part identification disabled")
 
 # --- Historical Stress Engine ---
 def get_historical_stress_factor(location: str, part_name: str):
@@ -858,43 +1067,116 @@ def check_future_risk(location: str):
 @app.post("/api/predict-lifecycle")
 async def predict_lifecycle(
     part_name: str = Form(...),
-    usage_hours: float = Form(...),
+    usage_hours: Optional[float] = Form(None),
     location: str = Form(...),
     image: UploadFile = File(...) 
 ):
+    """
+    Predict remaining lifecycle of a tractor part
+    
+    Args:
+        part_name: Name of the part (e.g., "battery", "fan belt")
+        usage_hours: Hours the part has been used
+        location: Geographic location (affects environmental stress)
+        image: Image of the part for visual damage assessment
+    
+    Returns:
+        JSON with prediction results including remaining life, status, and analysis
+    """
+    prediction_start_time = datetime.now(timezone.utc)
+    
     try:
-        print(f"\n--- 📥 NEW REQUEST: {part_name} | Hours: {usage_hours} | Location: {location} ---")
-        print(f"📸 Image received: {image.filename} ({image.content_type})")
+        usage_hours_value = float(usage_hours or 0.0)
+        logger.info(f"📥 NEW REQUEST: {part_name} | Hours: {usage_hours} | Location: {location}")
+        logger.info(f"📸 Image: {image.filename} ({image.content_type})")
+
+        # Import ML utilities
+        try:
+            from ml_utils import ImagePreprocessor, PredictionValidator, clip_prediction
+            from config import MIN_PREDICTION_CONFIDENCE
+        except ImportError as e:
+            logger.error(f"Failed to import ML utilities: {e}")
+            raise HTTPException(status_code=500, detail="ML utilities not available")
+
+        # Initialize validators
+        image_preprocessor = ImagePreprocessor(target_size=(224, 224))
+        prediction_validator = PredictionValidator(min_confidence=MIN_PREDICTION_CONFIDENCE)
 
         # A. GET FRESH LIFESPAN (From AI Knowledge / Gemini)
         if ai_available:
             fresh_life = ai_knowledge.get_standard_lifespan(part_name)
-            print(f"🤖 AI Knowledge: Available - Lifespan: {fresh_life} hours")
+            logger.info(f"🤖 AI Knowledge: Available - Lifespan: {fresh_life} hours")
         else:
             fresh_life = 500  # Default fallback
-            print(f"⚠️ AI Knowledge: Not available - Using fallback: {fresh_life} hours")
+            logger.warning(f"⚠️ AI Knowledge: Not available - Using fallback: {fresh_life} hours")
 
         # B. ANALYZE VISUAL DAMAGE (From .h5 Model)
         visual_damage = 0.0
+        confidence = 0.0
+        analysis_model = "Simulation Mode"
+        
+        # Read and validate image
+        img_data = await image.read()
+        logger.info(f"🖼️ Image data received: {len(img_data)} bytes")
+        
+        # Validate image
+        is_valid_image, validation_message = image_preprocessor.validate_image(img_data)
+        if not is_valid_image:
+            logger.warning(f"⚠️ Image validation failed: {validation_message}")
+            raise HTTPException(status_code=400, detail=f"Invalid image: {validation_message}")
+        
         if cnn_model and tensorflow_available:
-            # Preprocess Image
-            img_data = await image.read()
-            print(f"🖼️ Image data received: {len(img_data)} bytes")
-            img = Image.open(BytesIO(img_data)).convert('RGB')
-            img = img.resize((224, 224))
-            img_array = np.array(img) / 255.0
-            img_array = np.expand_dims(img_array, axis=0)
-            
-            # Predict
-            prediction = cnn_model.predict(img_array)
-            visual_damage = float(prediction[0][0])
-            print(f"👁️ Vision Model: Detected {int(visual_damage * 100)}% Physical Damage")
+            try:
+                # Preprocess image
+                img_array = image_preprocessor.preprocess_image(img_data)
+                if img_array is None:
+                    raise ValueError("Image preprocessing failed")
+                
+                # Predict
+                prediction = cnn_model.predict(img_array, verbose=0)
+                raw_prediction = float(prediction[0][0])
+                
+                # Clip to valid range
+                visual_damage = clip_prediction(raw_prediction, 0.0, 1.0)
+                
+                # Calculate confidence
+                confidence = prediction_validator.calculate_confidence(visual_damage)
+                
+                # Validate prediction
+                is_valid, validation_msg = prediction_validator.validate_prediction(
+                    visual_damage, 
+                    confidence
+                )
+                
+                if not is_valid:
+                    logger.warning(f"⚠️ Prediction validation warning: {validation_msg}")
+                    # Continue but flag for review
+                
+                analysis_model = f"MobileNetV2 (Transfer Learning) - Confidence: {confidence:.2%}"
+                logger.info(f"👁️ Vision Model: {int(visual_damage * 100)}% Damage (Confidence: {confidence:.2%})")
+                
+                # Log prediction for monitoring
+                prediction_validator.log_prediction({
+                    "part_name": part_name,
+                    "prediction": visual_damage,
+                    "confidence": confidence,
+                    "raw_prediction": raw_prediction,
+                    "location": location
+                })
+                
+            except Exception as e:
+                logger.error(f"❌ Vision model prediction failed: {e}")
+                # Fall back to simulation
+                visual_damage = 0.35
+                confidence = 0.5
+                analysis_model = "Simulation Mode (Model Error)"
+                logger.warning("⚠️ Using simulation mode due to model error")
         else:
             # Fallback if TensorFlow not available or model not loaded
-            print("⚠️ Vision analysis unavailable. Using simulation mode.")
+            logger.info("⚠️ Vision analysis unavailable. Using simulation mode.")
             visual_damage = 0.35
-            print("⚠️ Simulation: Simulating 35% Visual Damage")
-            visual_damage = 0.35
+            confidence = 0.5
+            analysis_model = "Simulation Mode"
 
         # C. ANALYZE TIME (Historical + Future)
         # 1. Past Stress
@@ -909,27 +1191,36 @@ async def predict_lifecycle(
         # 1. Calculate Total Effective Capacity (Reduced by Damage & Risk)
         effective_capacity = fresh_life * (1.0 - visual_damage - future_penalty)
         
-        # BONUS: If part is in good condition (< 20% damage), extend life by up to 50%
+        # BONUS: If part is in good condition (< 20% damage), extend life by up to 30%
         # This accounts for well-maintained parts lasting longer than rated life
+        condition_bonus_applied = 0.0
         if visual_damage < 0.20:  # Less than 20% damage
-            condition_bonus = (0.20 - visual_damage) / 0.20 * 0.50  # Up to 50% bonus
+            condition_bonus = (0.20 - visual_damage) / 0.20 * 0.30  # Up to 30% bonus (reduced from 50%)
             effective_capacity *= (1.0 + condition_bonus)
-            print(f"✨ Condition Bonus: +{int(condition_bonus * 100)}% life extension")
+            condition_bonus_applied = condition_bonus
+            logger.info(f"✨ Condition Bonus: +{int(condition_bonus * 100)}% life extension")
         
         # 2. Calculate Real Usage (Inflated by Historical Stress)
-        real_usage_impact = usage_hours * hist_stress
+        real_usage_impact = usage_hours_value * hist_stress
+        
         # 3. Remaining Life
         remaining = effective_capacity - real_usage_impact
         remaining = max(0, int(remaining))  # No negative numbers
+        
+        # IMPORTANT: Cap remaining life to not exceed fresh lifespan
+        # Even with bonuses, remaining life should never be more than the original rated life
+        remaining = min(remaining, fresh_life)
 
         # E. DETERMINE STATUS COLOR
         status = "GOOD"
         color_code = "#008000"  # Green
 
-        if remaining < 100:
+        remaining_ratio = (remaining / fresh_life) if fresh_life else 0.0
+
+        if remaining < 100 or visual_damage >= 0.85 or remaining_ratio <= 0.10:
             status = "CRITICAL REPLACEMENT"
             color_code = "#FF0000"  # Red
-        elif remaining < 300:
+        elif remaining < 300 or visual_damage >= 0.65 or remaining_ratio <= 0.25:
             status = "WARNING"
             color_code = "#FFA500"  # Orange
         
@@ -937,36 +1228,154 @@ async def predict_lifecycle(
         if future_penalty > 0 and remaining < 400:
             status = "URGENT (STORM RISK)"
             color_code = "#FF4500"  # Red-Orange
+        
+        # F. CONVERT TO DAYS (8 hours per day of operation)
+        HOURS_PER_DAY = 8
+        fresh_life_days = round(fresh_life / HOURS_PER_DAY, 1)
+        effective_capacity_days = round(effective_capacity / HOURS_PER_DAY, 1)
+        real_usage_days = round(real_usage_impact / HOURS_PER_DAY, 1)
+        remaining_days = round(remaining / HOURS_PER_DAY, 1)
 
-        # F. RETURN JSON TO FLUTTER APP
+        # G. RETURN JSON TO FLUTTER APP
         result = {
             "part_name": part_name,
             "ai_knowledge": {
-                "fresh_lifespan": f"{fresh_life} Hours"
+                "fresh_lifespan": f"{fresh_life_days} Days ({fresh_life} hours)",
+                "source": "Groq AI" if ai_available else "Simulation"
             },
             "visual_scan": {
                 "wear_detected": f"{int(visual_damage * 100)}%",
-                "analysis_model": "MobileNetV2 (Transfer Learning)"
+                "confidence": f"{int(confidence * 100)}%",
+                "analysis_model": analysis_model
             },
             "environment": {
                 "location": location,
                 "historical_stress": f"{hist_reason} (Load: {hist_stress}x)",
                 "future_forecast": future_msg
             },
+            "calculation": {
+                "effective_capacity": f"{effective_capacity_days} Days ({int(effective_capacity)} hours)",
+                "condition_bonus": f"+{int(condition_bonus_applied * 100)}%",
+                "real_usage_impact": f"{real_usage_days} Days ({int(real_usage_impact)} hours)"
+            },
             "prediction": {
-                "remaining_life": f"{remaining} Hours",
+                "remaining_life": f"{remaining_days} Days ({remaining} hours)",
+                "remaining_life_hours": int(remaining),  # Add integer value for mobile app
+                "estimated_life_hours": int(fresh_life),  # Add estimated life for mobile app
                 "status": status,
                 "color_code": color_code
+            },
+            "metadata": {
+                "model_version": MODEL_VERSION,
+                "prediction_time": datetime.now(timezone.utc).isoformat(),
+                "processing_time_ms": int((datetime.now(timezone.utc) - prediction_start_time).total_seconds() * 1000)
             }
         }
 
-        print(f"✅ Sending Result: {status} | Remaining: {remaining} Hours")
-        logger.info(f"📤 API Response: Status={status}, Remaining={remaining} Hours, Location={location}")
+        logger.info(f"✅ Prediction Complete: {status} | Remaining: {remaining_days} Days ({remaining} hours) | Time: {result['metadata']['processing_time_ms']}ms")
+        
+        # Log to database if enabled
+        if os.getenv("ENABLE_PREDICTION_LOGGING", "true").lower() == "true":
+            try:
+                # TODO: Save to database for monitoring and analysis
+                pass
+            except Exception as e:
+                logger.error(f"Failed to log prediction: {e}")
+        
         return result
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
-        logger.error(f"❌ Lifecycle Prediction Error: {str(e)} | Part: {part_name} | Location: {location}")
-        print(f"❌ Error in lifecycle prediction: {e}")
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+        logger.error(f"❌ Lifecycle Prediction Error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Prediction failed: {str(e)}"
+        )
+
+# --- Part Identification Endpoint ---
+@app.post("/api/identify-part")
+async def identify_part(image: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Accept an image and return the identified part with full DB details.
+
+    Returns top-5 predictions with part details, compatibility, and description.
+    """
+    logger.info(f"📸 Part identification request: {image.filename} ({image.content_type})")
+
+    # Read the uploaded image
+    img_data = await image.read()
+
+    # Validate and preprocess
+    pre = ImagePreprocessor(target_size=(224, 224))
+    valid, msg = pre.validate_image(img_data)
+    if not valid:
+        logger.warning(f"⚠️ Invalid image for part identification: {msg}")
+        raise HTTPException(status_code=400, detail=f"Invalid image: {msg}")
+
+    arr = pre.preprocess_image(img_data)
+    if arr is None:
+        raise HTTPException(status_code=500, detail="Image preprocessing failed")
+
+    if not part_identifier:
+        raise HTTPException(status_code=503, detail="Part identification model unavailable")
+
+    try:
+        # Get top 5 predictions ranked by confidence
+        # Now returns part_number directly (not model label)
+        predictions = part_identifier.predict(arr, top_k=5)
+        
+        # Build detailed response for each prediction
+        from models.identification import IdentificationPart, IdentificationPartCompatibility, IdentificationTractor
+        
+        results = []
+        for part_number, confidence in predictions:
+            # Query part from DB
+            part = db.query(IdentificationPart).filter(
+                IdentificationPart.part_number == part_number
+            ).first()
+            
+            if not part:
+                logger.warning(f"⚠️ Part not found in DB for part_number: {part_number}")
+                continue
+            
+            # Query compatibility tractors
+            compat_records = db.query(IdentificationTractor).join(
+                IdentificationPartCompatibility,
+                IdentificationPartCompatibility.tractor_id == IdentificationTractor.id
+            ).filter(
+                IdentificationPartCompatibility.part_id == part.id
+            ).all()
+            
+            compatibility = [t.name for t in compat_records]
+            
+            # Build response object
+            part_response = {
+                "name": part.name,
+                "partNumber": part.part_number,
+                "compatibility": compatibility,
+                "confidence": round(confidence * 100, 2),  # Convert to percentage
+                "image": part.image,
+                "description": part.description or "",
+                "model3dVideo": part.model_3d_vid or ""
+            }
+            results.append(part_response)
+        
+        if not results:
+            logger.warning("⚠️ No valid parts found for predictions")
+            raise HTTPException(status_code=404, detail="No parts found in database")
+        
+        logger.info(f"✓ Identified {len(results)} parts, top: {results[0]['name']} ({results[0]['confidence']}%)")
+        return {"predictions": results}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Part identification error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Identification error: {str(e)}")
+
 if not spaces_configured:
     logger.warning("⚠ Spaces not configured - uploads will fail")
     # Keep local directories for fallback
@@ -1163,6 +1572,7 @@ def unified_login(login_data: UserLogin, db: Session = Depends(get_db)):
             expires_delta=access_token_expires
         )
         
+        logger.info(f"User {app_user.id} login - profile_picture_url: '{app_user.profile_picture_url}'")
         return {
             "access_token": access_token,
             "token_type": "bearer",
@@ -1302,6 +1712,7 @@ def register_seller(seller_data: SellerRegister, db: Session = Depends(get_db)):
             "phone_number": new_seller.phone_number,
             "business_address": new_seller.business_address,
             "business_description": new_seller.business_description,
+            "logo_url": new_seller.logo_url,
             "latitude": new_seller.latitude,
             "longitude": new_seller.longitude,
             "shop_location_name": new_seller.shop_location_name,
@@ -1334,6 +1745,13 @@ def login_seller(login_data: UserLogin, db: Session = Depends(get_db)):
         expires_delta=access_token_expires
     )
     
+    # Update FCM token if provided
+    if login_data.fcm_token:
+        seller.fcm_token = login_data.fcm_token
+        db.commit()
+    
+    logger.info(f"Seller {seller.id} logged in - Logo URL: {seller.logo_url}")
+    
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -1342,7 +1760,17 @@ def login_seller(login_data: UserLogin, db: Session = Depends(get_db)):
             "email": seller.email,
             "business_name": seller.business_name,
             "owner_firstname": seller.owner_firstname,
-            "owner_lastname": seller.owner_lastname
+            "owner_lastname": seller.owner_lastname,
+            "phone_number": seller.phone_number,
+            "business_address": seller.business_address,
+            "business_description": seller.business_description,
+            "logo_url": seller.logo_url,
+            "latitude": seller.latitude,
+            "longitude": seller.longitude,
+            "shop_location_name": seller.shop_location_name,
+            "is_verified": seller.is_verified,
+            "is_active": seller.is_active,
+            "onboarding_completed": seller.onboarding_completed
         }
     }
 
@@ -1423,15 +1851,34 @@ async def update_seller_location(
 async def get_seller_locations(
     db: Session = Depends(get_db)
 ):
-    """Get all verified and active seller locations for map display"""
+    """Get all active seller locations for map display (verified or not)"""
+    # Debug logging
+    total_sellers = db.query(Seller).count()
+    active_sellers = db.query(Seller).filter(Seller.is_active == True).count()
+    verified_sellers = db.query(Seller).filter(Seller.is_verified == True).count()
+    with_coords = db.query(Seller).filter(
+        Seller.latitude.isnot(None),
+        Seller.longitude.isnot(None)
+    ).count()
+    
+    logger.info(f"📊 Seller Stats: Total={total_sellers}, Active={active_sellers}, Verified={verified_sellers}, WithCoords={with_coords}")
+    
+    # Show ALL active sellers with coordinates (regardless of verification status)
     sellers = db.query(Seller).filter(
         Seller.is_active == True,
-        Seller.is_verified == True,
         Seller.latitude.isnot(None),
         Seller.longitude.isnot(None)
     ).all()
     
-    return [
+    logger.info(f"📍 Returning {len(sellers)} seller locations")
+    if len(sellers) == 0:
+        logger.warning("⚠️ No sellers found! Check: is_active=True, latitude!=NULL, longitude!=NULL")
+        # List first 5 sellers with details for debugging
+        all_sellers = db.query(Seller).limit(5).all()
+        for s in all_sellers:
+            logger.info(f"  Seller: {s.business_name} | Active={s.is_active} | Verified={s.is_verified} | Coords=({s.latitude},{s.longitude})")
+    
+    result = [
         {
             "id": seller.id,
             "business_name": seller.business_name,
@@ -1444,32 +1891,31 @@ async def get_seller_locations(
         }
         for seller in sellers
     ]
+    
+    logger.info(f"✅ Returning {len(result)} locations")
+    return result
 
 # ============= NOTIFICATION ENDPOINTS =============
 
 @app.get("/api/notifications/status")
-async def check_notification_status():
+async def check_notification_status(
+    current_admin: dict = Depends(get_current_user)
+):
     """Check Firebase Admin SDK initialization status"""
     try:
-        from fcm_utils import initialize_firebase_admin, FIREBASE_ADMIN_AVAILABLE
-        
-        if not FIREBASE_ADMIN_AVAILABLE:
-            return {
-                "firebase_available": False,
-                "error": "Firebase Admin SDK not installed. Run: pip install firebase-admin"
-            }
-        
-        firebase_initialized = initialize_firebase_admin()
-        
+        from fcm_utils import validate_fcm_config
+        fcm_ok = validate_fcm_config()
+
         return {
-            "firebase_available": FIREBASE_ADMIN_AVAILABLE,
-            "firebase_initialized": firebase_initialized,
-            "status": "ready" if firebase_initialized else "configuration_needed"
+            "firebase_configured": fcm_ok,
+            "stripe_configured": stripe_configured,
+            "error": None,
+            "status": "ok" if fcm_ok else "configuration_needed"
         }
     except Exception as e:
         return {
-            "firebase_available": False,
-            "firebase_initialized": False,
+            "firebase_configured": False,
+            "stripe_configured": stripe_configured,
             "error": str(e),
             "status": "error"
         }
@@ -1501,10 +1947,15 @@ async def send_notification_endpoint(
         if notification_data.user_type not in ["all", "app_user", "seller"]:
             raise HTTPException(status_code=400, detail="Invalid user_type. Must be 'all', 'app_user', or 'seller'")
         
-        # Get admin ID
-        admin = db.query(User).filter(User.email == current_admin["email"]).first()
+        # Get admin email from current_admin dict and fetch admin from database
+        admin_email = current_admin.get("email")
+        if not admin_email:
+            raise HTTPException(status_code=401, detail="Invalid admin token")
+        
+        # Fetch admin from database (admin model is called 'User')
+        admin = db.query(User).filter(User.email == admin_email).first()
         if not admin:
-            raise HTTPException(status_code=404, detail="Admin not found")
+            raise HTTPException(status_code=401, detail="Admin not found")
         
         # Create notification record
         new_notification = Notification(
@@ -1550,15 +2001,15 @@ async def send_notification_endpoint(
                 total_count = len(all_tokens)
                 
                 if all_tokens:
-                    multicast_success, multicast_result = send_multicast_notification(
+                    multicast_result = send_multicast_notification(
                         fcm_tokens=all_tokens,
                         title=notification_data.title,
                         body=notification_data.message,
                         data={'type': 'admin_broadcast', 'notification_id': str(new_notification.id)}
                     )
                     
-                    if multicast_success:
-                        success_count = multicast_result.get('total_success', 0)
+                    if multicast_result.get('success', False):
+                        success_count = multicast_result.get('successful', 0)
                     else:
                         error_details.append(f"Multicast error: {multicast_result.get('error', 'Unknown error')}")
                         
@@ -1601,15 +2052,15 @@ async def send_notification_endpoint(
                         user_tokens = [user.fcm_token for user in app_users]
                         total_count = len(user_tokens)
                         
-                        multicast_success, multicast_result = send_multicast_notification(
+                        multicast_result = send_multicast_notification(
                             fcm_tokens=user_tokens,
                             title=notification_data.title,
                             body=notification_data.message,
                             data={'type': 'admin_broadcast', 'notification_id': str(new_notification.id)}
                         )
                         
-                        if multicast_success:
-                            success_count = multicast_result.get('total_success', 0)
+                        if multicast_result.get('success', False):
+                            success_count = multicast_result.get('successful', 0)
                         else:
                             error_details.append(f"Multicast error: {multicast_result.get('error', 'Unknown error')}")
                             
@@ -1650,15 +2101,15 @@ async def send_notification_endpoint(
                         seller_tokens = [seller.fcm_token for seller in sellers]
                         total_count = len(seller_tokens)
                         
-                        multicast_success, multicast_result = send_multicast_notification(
+                        multicast_result = send_multicast_notification(
                             fcm_tokens=seller_tokens,
                             title=notification_data.title,
                             body=notification_data.message,
                             data={'type': 'admin_broadcast', 'notification_id': str(new_notification.id)}
                         )
                         
-                        if multicast_success:
-                            success_count = multicast_result.get('total_success', 0)
+                        if multicast_result.get('success', False):
+                            success_count = multicast_result.get('successful', 0)
                         else:
                             error_details.append(f"Multicast error: {multicast_result.get('error', 'Unknown error')}")
             
@@ -1820,7 +2271,13 @@ def register_app_user(user_data: AppUserRegister, db: Session = Depends(get_db))
             "id": new_user.id,
             "email": new_user.email,
             "firstname": new_user.firstname,
-            "lastname": new_user.lastname
+            "lastname": new_user.lastname,
+            "phone_number": new_user.phone_number,
+            "address": new_user.address,
+            "profile_picture_url": new_user.profile_picture_url,
+            "is_social_login": new_user.is_social_login,
+            "is_banned": new_user.is_banned,
+            "is_deleted": new_user.is_deleted
         }
     }
 
@@ -1853,6 +2310,13 @@ def login_app_user(login_data: UserLogin, db: Session = Depends(get_db)):
         expires_delta=access_token_expires
     )
     
+    # Update FCM token if provided
+    if login_data.fcm_token:
+        user.fcm_token = login_data.fcm_token
+        db.commit()
+    
+    logger.info(f"User {user.id} logged in - Profile picture: {user.profile_picture_url}")
+    
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -1860,7 +2324,13 @@ def login_app_user(login_data: UserLogin, db: Session = Depends(get_db)):
             "id": user.id,
             "email": user.email,
             "firstname": user.firstname,
-            "lastname": user.lastname
+            "lastname": user.lastname,
+            "phone_number": user.phone_number,
+            "address": user.address,
+            "profile_picture_url": user.profile_picture_url,
+            "is_social_login": user.is_social_login,
+            "is_banned": user.is_banned,
+            "is_deleted": user.is_deleted
         }
     }
 
@@ -2053,6 +2523,8 @@ def social_login(social_data: SocialLoginRequest, db: Session = Depends(get_db))
             data={"sub": seller.email, "user_type": "seller", "user_id": seller.id}
         )
         
+        logger.info(f"Seller {seller.id} social login - Logo URL: {seller.logo_url}")
+        
         return {
             "access_token": access_token,
             "token_type": "bearer",
@@ -2105,6 +2577,8 @@ def social_login(social_data: SocialLoginRequest, db: Session = Depends(get_db))
         data={"sub": user.email, "user_type": "user", "user_id": user.id}
     )
     
+    logger.info(f"User {user.id} social login - Profile picture: {user.profile_picture_url}")
+    
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -2122,6 +2596,7 @@ async def auth_logout():
 @app.get("/api/users/me", response_model=AppUserResponse)
 def get_my_profile(current_user: AppUser = Depends(get_current_app_user)):
     """Get current user's profile"""
+    logger.info(f"Get profile for user {current_user.id} - profile_picture_url: '{current_user.profile_picture_url}'")
     return current_user
 
 @app.put("/api/users/me", response_model=AppUserResponse)
@@ -2233,13 +2708,89 @@ def update_seller_password(
 
 # ============= SPARE PARTS ENDPOINTS =============
 
+@app.post("/api/spare-parts/upload-image")
+async def upload_spare_part_image(
+    image: UploadFile = File(...)
+):
+    """Upload an image for spare part request (no auth required)"""
+    try:
+        logger.info(f"📸 Uploading spare part image: {image.filename}")
+        logger.info(f"📄 Content type: {image.content_type}")
+        
+        # Validate file type - check both content_type and file extension
+        valid_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
+        is_valid_content = image.content_type and image.content_type.startswith('image/')
+        is_valid_extension = any(image.filename.lower().endswith(ext) for ext in valid_extensions)
+        
+        if not is_valid_content and not is_valid_extension:
+            raise HTTPException(status_code=400, detail="Only image files are allowed")
+        
+        if not is_valid_content:
+            logger.warning(f"⚠️ Content type not image/* but extension is valid: {image.filename}")
+        
+        # Validate file size (max 10MB)
+        MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+        image_data = await image.read()
+        if len(image_data) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=400, detail="Image file too large (max 10MB)")
+        
+        # Generate unique filename
+        file_ext = image.filename.split('.')[-1] if '.' in image.filename else 'jpg'
+        unique_filename = f"spare_part_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.{file_ext}"
+        
+        # Upload to storage
+        try:
+            # Upload to Spaces if configured, otherwise save locally
+            if spaces_configured:
+                from spaces_utils import upload_file_to_spaces
+                from io import BytesIO
+                logger.info("🚀 Uploading to Digital Ocean Spaces...")
+                
+                image_io = BytesIO(image_data)
+                image_url = upload_file_to_spaces(
+                    image_io,
+                    unique_filename,
+                    content_type=image.content_type or 'image/jpeg',
+                    folder="spare-parts"
+                )
+                
+                if not image_url:
+                    raise HTTPException(status_code=500, detail="Failed to upload to storage")
+                    
+                logger.info(f"✅ Image uploaded to Spaces: {image_url}")
+            else:
+                # Save locally
+                logger.info("💾 Saving image locally...")
+                upload_dir = Path("uploads/spare-parts")
+                upload_dir.mkdir(parents=True, exist_ok=True)
+                file_path = upload_dir / unique_filename
+                
+                with open(file_path, 'wb') as f:
+                    f.write(image_data)
+                
+                base_url = os.getenv("BASE_URL", "http://localhost:8000")
+                image_url = f"{base_url}/uploads/spare-parts/{unique_filename}"
+                logger.info(f"✅ Image saved locally: {image_url}")
+        
+        except Exception as e:
+            logger.error(f"❌ Failed to upload image: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}")
+        
+        return {"image_url": image_url, "message": "Image uploaded successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Unexpected error during image upload: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}")
+
 @app.get("/api/spare-parts/requests", response_model=list[SparePartRequestResponse])
 async def get_spare_part_requests(
     current_user_data: dict = Depends(get_current_user_or_seller),
     db: Session = Depends(get_db)
 ):
-    """Get all spare part requests - accessible by users, sellers, and admins"""
-    requests = db.query(SparePartRequest).all()
+    """Get all active spare part requests - accessible by users, sellers, and admins"""
+    requests = db.query(SparePartRequest).filter(SparePartRequest.status == "active").all()
     
     # Add user information to each request
     result = []
@@ -2401,13 +2952,22 @@ async def upload_profile_picture(
         
         # Update profile picture URL based on user type
         if user_type == "user":
+            old_url = user.profile_picture_url
             user.profile_picture_url = image_url
-            logger.info(f"User {user.id} updated profile picture: {image_url}")
+            logger.info(f"User {user.id} updated profile picture from '{old_url}' to '{image_url}'")
         elif user_type == "seller":
+            old_url = user.logo_url
             user.logo_url = image_url
-            logger.info(f"Seller {user.id} updated logo: {image_url}")
-        
+            logger.info(f"Seller {user.id} updated logo from '{old_url}' to '{image_url}'")
+
         db.commit()
+
+        # Verify the change was saved
+        db.refresh(user)
+        if user_type == "user":
+            logger.info(f"Verified user {user.id} profile_picture_url: '{user.profile_picture_url}'")
+        elif user_type == "seller":
+            logger.info(f"Verified seller {user.id} logo_url: '{user.logo_url}'")
         
         return {
             "url": image_url, 
@@ -2429,7 +2989,7 @@ async def create_spare_part_request(
     current_user: AppUser = Depends(get_current_app_user),
     db: Session = Depends(get_db)
 ):
-    """Create a new spare part request"""
+    """Create a new spare part request and notify all sellers"""
     new_request = SparePartRequest(
         user_id=current_user.id,
         title=request_data.title,
@@ -2441,6 +3001,85 @@ async def create_spare_part_request(
     db.add(new_request)
     db.commit()
     db.refresh(new_request)
+    
+    # Send notification to all active sellers
+    try:
+        from fcm_utils import send_multicast_notification, validate_fcm_config, initialize_firebase_admin
+        
+        # Ensure Firebase is initialized
+        try:
+            initialize_firebase_admin()
+        except Exception as init_error:
+            logger.warning(f"⚠️ Firebase initialization warning (may already be initialized): {init_error}")
+        
+        if validate_fcm_config():
+            # Get all active sellers with FCM tokens
+            sellers = db.query(Seller).filter(
+                Seller.is_active == True,
+                Seller.fcm_token.isnot(None),
+                Seller.fcm_token != ''
+            ).all()
+            
+            logger.info(f"📢 Found {len(sellers)} active sellers with FCM tokens for request {new_request.id}")
+            
+            if sellers:
+                seller_tokens = [seller.fcm_token for seller in sellers if seller.fcm_token]
+                
+                logger.info(f"📢 Preparing to send notifications to {len(seller_tokens)} sellers")
+                
+                if seller_tokens:
+                    # Extract part name from title or description
+                    part_name = request_data.title.replace('Spare Part Request: ', '').strip()
+                    if not part_name or part_name == request_data.title:
+                        # Try to extract from description
+                        desc_lines = request_data.description.split('\n')
+                        for line in desc_lines:
+                            if 'Part Name:' in line:
+                                part_name = line.split('Part Name:')[1].strip()
+                                break
+                        if not part_name or part_name == request_data.title:
+                            part_name = "Spare Part"
+                    
+                    notification_title = f"New Spare Part Request: {part_name}"
+                    notification_body = f"A new request has been posted. {request_data.description[:100]}..." if len(request_data.description) > 100 else request_data.description
+                    
+                    logger.info(f"📢 Notification details - Title: {notification_title}, Body: {notification_body[:50]}...")
+                    
+                    # Send notifications to all sellers
+                    try:
+                        result = send_multicast_notification(
+                            fcm_tokens=seller_tokens,
+                            title=notification_title,
+                            body=notification_body,
+                            data={
+                                "type": "spare_part_request",
+                                "request_id": str(new_request.id),
+                                "action": "open_request"
+                            }
+                        )
+                        logger.info(f"✅ Successfully sent notifications to {len(seller_tokens)} sellers for request {new_request.id}")
+                        logger.info(f"📊 Notification result: {result}")
+                    except Exception as e:
+                        import traceback
+                        error_trace = traceback.format_exc()
+                        logger.error(f"❌ Failed to send seller notifications: {e}")
+                        logger.error(f"❌ Traceback: {error_trace}")
+                else:
+                    logger.warning(f"⚠️ No valid FCM tokens found for sellers")
+            else:
+                logger.warning(f"⚠️ No active sellers with FCM tokens found")
+        else:
+            logger.warning("⚠️ FCM not configured, skipping seller notifications")
+            logger.warning("⚠️ Please check Firebase Admin SDK credentials")
+    except ImportError as e:
+        logger.error(f"❌ Failed to import FCM utilities: {e}")
+        logger.error("❌ Make sure fcm_utils.py is available and Firebase Admin SDK is installed")
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        logger.error(f"❌ Error sending seller notifications: {e}")
+        logger.error(f"❌ Traceback: {error_trace}")
+        # Don't fail the request creation if notification fails
     
     return new_request
 
@@ -2461,10 +3100,18 @@ async def get_request_offers(
     
     offers = db.query(SparePartOffer).filter(SparePartOffer.request_id == request_id).all()
     
+    logger.info(f"Found {len(offers)} offers for request {request_id}")
+    
     # Add seller information to each offer
     result = []
     for offer in offers:
         seller = db.query(Seller).filter(Seller.id == offer.seller_id).first()
+        
+        if not seller:
+            logger.warning(f"Seller {offer.seller_id} not found for offer {offer.id}")
+        else:
+            logger.info(f"Loaded seller data for offer {offer.id}: {seller.business_name}")
+        
         offer_dict = {
             "id": offer.id,
             "request_id": offer.request_id,
@@ -2478,6 +3125,8 @@ async def get_request_offers(
                 "business_name": seller.business_name,
                 "owner_firstname": seller.owner_firstname,
                 "owner_lastname": seller.owner_lastname,
+                "business_address": seller.business_address,
+                "logo_url": seller.logo_url,
                 "latitude": seller.latitude,
                 "longitude": seller.longitude,
                 "shop_location_name": seller.shop_location_name
@@ -2485,6 +3134,7 @@ async def get_request_offers(
         }
         result.append(offer_dict)
     
+    logger.info(f"Returning {len(result)} offers with seller data")
     return result
 
 @app.post("/api/spare-parts/requests/{request_id}/offers", response_model=SparePartOfferResponse, status_code=status.HTTP_201_CREATED)
@@ -2537,14 +3187,16 @@ async def update_offer_status(
     if status_data.status not in ["accepted", "rejected"]:
         raise HTTPException(status_code=400, detail="Status must be 'accepted' or 'rejected'")
     
+    # Only allow rejecting through this endpoint
+    # Accepting should happen through payment flow
+    if status_data.status == "accepted":
+        raise HTTPException(
+            status_code=400, 
+            detail="To accept an offer, please complete the payment process first"
+        )
+    
     offer.status = status_data.status
     offer.updated_at = datetime.now(timezone.utc).isoformat()
-    
-    # If offer is accepted, mark the request as completed
-    if status_data.status == "accepted":
-        request.status = "completed"
-        request.updated_at = datetime.now(timezone.utc).isoformat()
-    
     db.commit()
     
     return MessageResponse(message=f"Offer {status_data.status} successfully", success=True)
@@ -2707,6 +3359,602 @@ def delete_part(
 
 
 
+# ============= PAYMENT ENDPOINTS =============
+
+@app.post("/api/payments/create-intent")
+async def create_payment_intent(
+    payment_data: PaymentIntentCreate,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Create a Stripe payment intent for 5% deposit"""
+    # Check stripe configuration - use stripe_configured flag to avoid UnboundLocalError
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    # Import stripe module reference to avoid UnboundLocalError
+    import stripe as stripe_module
+    
+    if stripe_module is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    # Get the offer
+    offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment_data.offer_id).first()
+    if not offer:
+        raise HTTPException(status_code=404, detail="Offer not found")
+    
+    # Verify the offer is pending (payment happens before acceptance)
+    if offer.status != "pending":
+        raise HTTPException(status_code=400, detail="Offer must be pending to create payment")
+    
+    # Get or create payment record
+    payment = db.query(Payment).filter(Payment.offer_id == offer.id).first()
+    if not payment:
+        # Calculate 5% deposit
+        deposit_amount = offer.price * 0.05
+        payment = Payment(
+            offer_id=offer.id,
+            user_id=current_user.id,
+            seller_id=offer.seller_id,
+            amount=deposit_amount,
+            total_amount=offer.price,
+            status="pending"
+        )
+        db.add(payment)
+        db.commit()
+        db.refresh(payment)
+    
+    # Check if payment already completed
+    if payment.status == "completed":
+        raise HTTPException(status_code=400, detail="Payment already completed")
+    
+    # Get or create Stripe customer for saving payment methods
+    stripe_customer_id = current_user.stripe_customer_id
+    if (payment_data.save_card or payment_data.payment_method_id) and not stripe_customer_id:
+        try:
+            customer = stripe_module.Customer.create(
+                email=current_user.email,
+                name=f"{current_user.firstname} {current_user.lastname}",
+                metadata={'user_id': str(current_user.id)}
+            )
+            stripe_customer_id = customer.id
+            current_user.stripe_customer_id = stripe_customer_id
+            db.commit()
+            logger.info(f"Created Stripe customer {stripe_customer_id} for user {current_user.id}")
+        except Exception as e:
+            logger.error(f"Failed to create Stripe customer: {e}")
+            # Continue without customer if save_card is optional
+    
+    # Prepare payment intent parameters
+    intent_params = {
+        'amount': int(payment.amount * 100),  # Convert to cents
+        'currency': 'usd',  # Stripe doesn't support LKR, using USD
+        'metadata': {
+            'payment_id': str(payment.id),
+            'offer_id': str(offer.id),
+            'user_id': str(current_user.id),
+            'seller_id': str(offer.seller_id)
+        }
+    }
+    
+    # Use saved payment method if provided
+    if payment_data.payment_method_id:
+        saved_method = db.query(SavedPaymentMethod).filter(
+            SavedPaymentMethod.stripe_payment_method_id == payment_data.payment_method_id,
+            SavedPaymentMethod.user_id == current_user.id
+        ).first()
+        if saved_method:
+            intent_params['payment_method'] = payment_data.payment_method_id
+            intent_params['customer'] = saved_method.stripe_customer_id or stripe_customer_id
+            intent_params['confirmation_method'] = 'automatic'
+            intent_params['confirm'] = True
+        else:
+            raise HTTPException(status_code=404, detail="Saved payment method not found")
+    elif payment_data.save_card and stripe_customer_id:
+        # Setup for saving payment method
+        intent_params['setup_future_usage'] = 'off_session'
+        intent_params['customer'] = stripe_customer_id
+    
+    try:
+        # Workaround for Stripe library bug where stripe.apps is None
+        # Ensure apps module is imported before creating payment intent
+        try:
+            # Use getattr to access apps without triggering local variable detection
+            if not hasattr(stripe_module, 'apps') or stripe_module.apps is None:
+                # Force import of apps module
+                import importlib
+                importlib.import_module('stripe.apps')
+        except (AttributeError, ImportError):
+            pass
+        
+        # Create Stripe payment intent
+        intent = stripe_module.PaymentIntent.create(**intent_params)
+        
+        logger.info(f"Stripe payment intent created: {intent.id}")
+        logger.info(f"Intent type: {type(intent)}")
+        logger.info(f"Intent object: {intent}")
+        logger.info(f"Intent attributes: {dir(intent)}")
+        
+        # Update payment record with intent ID
+        payment.stripe_payment_intent_id = intent.id
+        db.commit()
+        
+        # Safely access client_secret with multiple methods
+        client_secret = None
+        
+        # Try direct attribute access
+        if hasattr(intent, 'client_secret'):
+            client_secret = intent.client_secret
+            logger.info(f"Got client_secret via direct access: {client_secret}")
+        
+        # Try getattr as fallback
+        if not client_secret:
+            client_secret = getattr(intent, 'client_secret', None)
+            logger.info(f"Got client_secret via getattr: {client_secret}")
+        
+        # Try dictionary access if it's a dict-like object
+        if not client_secret and hasattr(intent, 'get'):
+            client_secret = intent.get('client_secret')
+            logger.info(f"Got client_secret via dict get: {client_secret}")
+        
+        if not client_secret:
+            logger.error(f"Payment intent created but no client_secret found!")
+            logger.error(f"Intent ID: {intent.id}")
+            logger.error(f"Intent dict: {intent.to_dict() if hasattr(intent, 'to_dict') else 'N/A'}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Payment intent created but client secret is missing"
+            )
+        
+        logger.info(f"Successfully extracted client_secret: {client_secret[:20]}...")
+        
+        return {
+            "client_secret": client_secret,
+            "payment_intent_id": intent.id,
+            "amount": payment.amount,
+            "total_amount": payment.total_amount,
+            "payment_id": payment.id
+        }
+    except stripe_module.error.StripeError as e:
+        logger.error(f"Stripe error during payment intent creation: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Stripe error: {str(e)}"
+        )
+    except Exception as e:
+        import traceback
+        logger.error(f"Stripe payment intent creation failed: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create payment intent: {str(e)}"
+        )
+
+@app.post("/api/payments/confirm")
+async def confirm_payment(
+    payment_data: PaymentConfirm,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Confirm payment completion"""
+    # Check stripe configuration - use stripe_configured flag to avoid UnboundLocalError
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    # Import stripe module reference to avoid UnboundLocalError
+    import stripe as stripe_module
+    
+    if stripe_module is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    try:
+        # Retrieve payment intent from Stripe
+        intent = stripe_module.PaymentIntent.retrieve(payment_data.payment_intent_id)
+        
+        # Find payment record
+        payment = db.query(Payment).filter(
+            Payment.stripe_payment_intent_id == payment_data.payment_intent_id
+        ).first()
+        
+        if not payment:
+            raise HTTPException(status_code=404, detail="Payment not found")
+        
+        # Verify payment belongs to current user
+        if payment.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        
+        # Check payment status
+        logger.info(f"Payment intent status: {intent.status}")
+        
+        # If payment requires confirmation or action, confirm it with return_url
+        if intent.status in ['requires_confirmation', 'requires_action']:
+            logger.info(f"Payment intent requires confirmation/action. Confirming with return_url...")
+            
+            # Prepare confirmation parameters
+            confirm_params = {}
+            
+            # Add return_url if provided (required for 3D Secure and other payment methods)
+            if payment_data.return_url:
+                confirm_params['return_url'] = payment_data.return_url
+            else:
+                # Use a default return URL if not provided
+                # This should be your app's deep link or web URL
+                confirm_params['return_url'] = 'smartfarmer://payment-return'
+                logger.warning("No return_url provided, using default: smartfarmer://payment-return")
+            
+            try:
+                # Confirm the payment intent
+                intent = stripe_module.PaymentIntent.confirm(
+                    payment_data.payment_intent_id,
+                    **confirm_params
+                )
+                logger.info(f"Payment intent confirmed. New status: {intent.status}")
+                
+                # If still requires action after confirmation, return next_action for client
+                if intent.status == 'requires_action' and hasattr(intent, 'next_action'):
+                    next_action = intent.next_action
+                    if next_action and hasattr(next_action, 'redirect_to_url'):
+                        redirect_url = next_action.redirect_to_url.url if hasattr(next_action.redirect_to_url, 'url') else None
+                        logger.info(f"Payment requires action. Redirect URL: {redirect_url}")
+                        return {
+                            "success": False,
+                            "requires_action": True,
+                            "status": intent.status,
+                            "redirect_url": redirect_url,
+                            "message": "Payment requires additional authentication",
+                            "payment": {
+                                "id": payment.id,
+                                "amount": payment.amount,
+                                "status": payment.status
+                            }
+                        }
+            except stripe_module.error.StripeError as confirm_error:
+                logger.error(f"Failed to confirm payment intent: {confirm_error}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Failed to confirm payment: {str(confirm_error)}"
+                )
+        
+        if intent.status == 'succeeded':
+            payment.status = "completed"
+            payment.stripe_charge_id = intent.latest_charge if hasattr(intent, 'latest_charge') and intent.latest_charge else None
+            payment.updated_at = datetime.now(timezone.utc).isoformat()
+            
+            # Save payment method if requested
+            if payment_data.save_card and intent.payment_method:
+                try:
+                    # Get or create Stripe customer
+                    stripe_customer_id = current_user.stripe_customer_id
+                    if not stripe_customer_id:
+                        customer = stripe_module.Customer.create(
+                            email=current_user.email,
+                            name=f"{current_user.firstname} {current_user.lastname}",
+                            metadata={'user_id': str(current_user.id)}
+                        )
+                        stripe_customer_id = customer.id
+                        current_user.stripe_customer_id = stripe_customer_id
+                        db.commit()
+                    
+                    # Attach payment method to customer
+                    stripe_module.PaymentMethod.attach(
+                        intent.payment_method,
+                        customer=stripe_customer_id
+                    )
+                    
+                    # Get payment method details
+                    pm = stripe_module.PaymentMethod.retrieve(intent.payment_method)
+                    card = pm.card if hasattr(pm, 'card') else None
+                    
+                    if card:
+                        # Check if already saved
+                        existing = db.query(SavedPaymentMethod).filter(
+                            SavedPaymentMethod.stripe_payment_method_id == intent.payment_method
+                        ).first()
+                        
+                        if not existing:
+                            # Set as default if user has no saved cards
+                            is_default = db.query(SavedPaymentMethod).filter(
+                                SavedPaymentMethod.user_id == current_user.id
+                            ).count() == 0
+                            
+                            saved_method = SavedPaymentMethod(
+                                user_id=current_user.id,
+                                stripe_payment_method_id=intent.payment_method,
+                                stripe_customer_id=stripe_customer_id,
+                                card_brand=card.brand if hasattr(card, 'brand') else None,
+                                card_last4=card.last4 if hasattr(card, 'last4') else None,
+                                card_exp_month=card.exp_month if hasattr(card, 'exp_month') else None,
+                                card_exp_year=card.exp_year if hasattr(card, 'exp_year') else None,
+                                is_default=is_default
+                            )
+                            db.add(saved_method)
+                            db.commit()
+                            logger.info(f"Saved payment method {intent.payment_method} for user {current_user.id}")
+                except Exception as e:
+                    logger.error(f"Failed to save payment method: {e}")
+                    # Don't fail the payment if saving card fails
+            
+            # Accept the offer after payment is confirmed
+            offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
+            if offer and offer.status == "pending":
+                offer.status = "accepted"
+                offer.updated_at = datetime.now(timezone.utc).isoformat()
+                
+                # Mark the request as completed
+                request = db.query(SparePartRequest).filter(SparePartRequest.id == offer.request_id).first()
+                if request:
+                    request.status = "completed"
+                    request.updated_at = datetime.now(timezone.utc).isoformat()
+            
+            db.commit()
+            
+            # Get offer details for response
+            offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
+            
+            return {
+                "success": True,
+                "message": "Payment confirmed successfully. Offer has been accepted.",
+                "payment": {
+                    "id": payment.id,
+                    "amount": float(payment.amount) if payment.amount else 0.0,
+                    "total_amount": float(payment.total_amount) if payment.total_amount else 0.0,
+                    "status": payment.status,
+                    "stripe_payment_intent_id": payment.stripe_payment_intent_id,
+                    "stripe_charge_id": payment.stripe_charge_id,
+                    "created_at": payment.created_at,
+                },
+                "offer": {
+                    "id": offer.id if offer else None,
+                    "status": offer.status if offer else None,
+                    "accepted": offer.status == "accepted" if offer else False
+                } if offer else None
+            }
+        elif intent.status in ['requires_payment_method', 'requires_confirmation', 'requires_action', 'processing']:
+            # Payment is still in progress - don't mark as failed
+            logger.info(f"Payment intent is still in progress with status: {intent.status}")
+            return {
+                "success": False,
+                "message": f"Payment is still in progress. Status: {intent.status}",
+                "status": intent.status,
+                "payment": {
+                    "id": payment.id,
+                    "amount": payment.amount,
+                    "status": payment.status
+                }
+            }
+        else:
+            # Payment failed or was canceled
+            payment.status = "failed"
+            payment.updated_at = datetime.now(timezone.utc).isoformat()
+            db.commit()
+            
+            logger.warning(f"Payment not completed. Status: {intent.status}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Payment not completed. Status: {intent.status}"
+            )
+    except stripe_module.error.StripeError as e:
+        logger.error(f"Stripe error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Stripe error: {str(e)}"
+        )
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        logger.error(f"Payment confirmation failed: {str(e)}")
+        logger.error(f"Traceback: {error_trace}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to confirm payment: {str(e) if str(e) else 'Unknown error occurred'}"
+        )
+
+@app.get("/api/payments/saved-methods")
+async def get_saved_payment_methods(
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Get all saved payment methods for the current user"""
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    saved_methods = db.query(SavedPaymentMethod).filter(
+        SavedPaymentMethod.user_id == current_user.id
+    ).order_by(SavedPaymentMethod.is_default.desc(), SavedPaymentMethod.created_at.desc()).all()
+    
+    result = []
+    for method in saved_methods:
+        result.append({
+            "id": method.id,
+            "stripe_payment_method_id": method.stripe_payment_method_id,
+            "card_brand": method.card_brand,
+            "card_last4": method.card_last4,
+            "card_exp_month": method.card_exp_month,
+            "card_exp_year": method.card_exp_year,
+            "is_default": method.is_default,
+            "created_at": method.created_at
+        })
+    
+    return result
+
+@app.delete("/api/payments/saved-methods/{method_id}")
+async def delete_saved_payment_method(
+    method_id: int,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a saved payment method"""
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    import stripe as stripe_module
+    
+    saved_method = db.query(SavedPaymentMethod).filter(
+        SavedPaymentMethod.id == method_id,
+        SavedPaymentMethod.user_id == current_user.id
+    ).first()
+    
+    if not saved_method:
+        raise HTTPException(status_code=404, detail="Payment method not found")
+    
+    try:
+        # Detach payment method from Stripe customer
+        if saved_method.stripe_customer_id:
+            stripe_module.PaymentMethod.detach(saved_method.stripe_payment_method_id)
+    except Exception as e:
+        logger.error(f"Failed to detach payment method from Stripe: {e}")
+        # Continue with deletion even if Stripe detach fails
+    
+    # Delete from database
+    db.delete(saved_method)
+    db.commit()
+    
+    return {"message": "Payment method deleted successfully", "success": True}
+
+@app.put("/api/payments/saved-methods/{method_id}/set-default")
+async def set_default_payment_method(
+    method_id: int,
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Set a saved payment method as default"""
+    if not stripe_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service not configured"
+        )
+    
+    saved_method = db.query(SavedPaymentMethod).filter(
+        SavedPaymentMethod.id == method_id,
+        SavedPaymentMethod.user_id == current_user.id
+    ).first()
+    
+    if not saved_method:
+        raise HTTPException(status_code=404, detail="Payment method not found")
+    
+    # Unset all other default methods for this user
+    db.query(SavedPaymentMethod).filter(
+        SavedPaymentMethod.user_id == current_user.id,
+        SavedPaymentMethod.id != method_id
+    ).update({"is_default": False})
+    
+    # Set this method as default
+    saved_method.is_default = True
+    saved_method.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    
+    return {"message": "Default payment method updated successfully", "success": True}
+
+@app.get("/api/payments/my-payments", response_model=list[PaymentResponse])
+async def get_my_payments(
+    current_user: AppUser = Depends(get_current_app_user),
+    db: Session = Depends(get_db)
+):
+    """Get all payments for the current user"""
+    payments = db.query(Payment).filter(Payment.user_id == current_user.id).order_by(Payment.created_at.desc()).all()
+    
+    result = []
+    for payment in payments:
+        offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
+        seller = db.query(Seller).filter(Seller.id == payment.seller_id).first()
+        
+        payment_dict = {
+            "id": payment.id,
+            "offer_id": payment.offer_id,
+            "user_id": payment.user_id,
+            "seller_id": payment.seller_id,
+            "amount": payment.amount,
+            "total_amount": payment.total_amount,
+            "stripe_payment_intent_id": payment.stripe_payment_intent_id,
+            "stripe_charge_id": payment.stripe_charge_id,
+            "status": payment.status,
+            "payment_method": payment.payment_method,
+            "created_at": payment.created_at,
+            "updated_at": payment.updated_at,
+            "offer": {
+                "id": offer.id,
+                "price": offer.price,
+                "description": offer.description,
+                "status": offer.status
+            } if offer else None,
+            "seller": {
+                "id": seller.id,
+                "business_name": seller.business_name,
+                "owner_firstname": seller.owner_firstname,
+                "owner_lastname": seller.owner_lastname
+            } if seller else None
+        }
+        result.append(payment_dict)
+    
+    return result
+
+@app.get("/api/payments/seller-payments", response_model=list[PaymentResponse])
+async def get_seller_payments(
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Get all approved payments for the current seller"""
+    payments = db.query(Payment).filter(
+        Payment.seller_id == current_seller.id,
+        Payment.status == "completed"
+    ).order_by(Payment.created_at.desc()).all()
+    
+    result = []
+    for payment in payments:
+        offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
+        user = db.query(AppUser).filter(AppUser.id == payment.user_id).first()
+        
+        payment_dict = {
+            "id": payment.id,
+            "offer_id": payment.offer_id,
+            "user_id": payment.user_id,
+            "seller_id": payment.seller_id,
+            "amount": payment.amount,
+            "total_amount": payment.total_amount,
+            "stripe_payment_intent_id": payment.stripe_payment_intent_id,
+            "stripe_charge_id": payment.stripe_charge_id,
+            "status": payment.status,
+            "payment_method": payment.payment_method,
+            "created_at": payment.created_at,
+            "updated_at": payment.updated_at,
+            "offer": {
+                "id": offer.id,
+                "price": offer.price,
+                "description": offer.description,
+                "status": offer.status
+            } if offer else None,
+            "user": {
+                "id": user.id,
+                "firstname": user.firstname,
+                "lastname": user.lastname,
+                "email": user.email
+            } if user else None
+        }
+        result.append(payment_dict)
+    
+    return result
+
 # ============= ADMIN USER MANAGEMENT ENDPOINTS =============
 
 @app.put("/admin/profile", response_model=dict)
@@ -2846,6 +4094,125 @@ async def get_user_stats(
         "active_users": active_users or 0,
         "banned_users": banned_users or 0,
         "deleted_users": deleted_users or 0
+    }
+
+@app.get("/admin/transactions")
+async def get_all_transactions(
+    skip: int = 0,
+    limit: int = 1000,  # Increased default limit to show more transactions
+    status: Optional[str] = None,
+    current_admin: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all payment transactions (Admin only)"""
+    from sqlalchemy import func
+    
+    query = db.query(Payment)
+    
+    # Filter by status if provided
+    if status:
+        query = query.filter(Payment.status == status)
+    
+    # Get total count for pagination
+    total_count = query.count()
+    
+    # Get transactions with pagination (no limit if limit is very high)
+    if limit >= 1000:
+        transactions = query.order_by(Payment.created_at.desc()).all()
+    else:
+        transactions = query.order_by(Payment.created_at.desc()).offset(skip).limit(limit).all()
+    
+    result = []
+    for payment in transactions:
+        try:
+            offer = db.query(SparePartOffer).filter(SparePartOffer.id == payment.offer_id).first()
+            user = db.query(AppUser).filter(AppUser.id == payment.user_id).first()
+            seller = db.query(Seller).filter(Seller.id == payment.seller_id).first()
+            
+            transaction_dict = {
+                "id": payment.id,
+                "offer_id": payment.offer_id,
+                "user_id": payment.user_id,
+                "seller_id": payment.seller_id,
+                "amount": float(payment.amount) if payment.amount else 0.0,
+                "total_amount": float(payment.total_amount) if payment.total_amount else 0.0,
+                "stripe_payment_intent_id": payment.stripe_payment_intent_id,
+                "stripe_charge_id": payment.stripe_charge_id,
+                "status": payment.status or "unknown",
+                "payment_method": payment.payment_method or "unknown",
+                "created_at": payment.created_at,
+                "updated_at": payment.updated_at,
+                "offer": {
+                    "id": offer.id,
+                    "price": float(offer.price) if offer.price else 0.0,
+                    "description": offer.description or "",
+                    "status": offer.status or "unknown"
+                } if offer else None,
+                "user": {
+                    "id": user.id,
+                    "firstname": user.firstname or "",
+                    "lastname": user.lastname or "",
+                    "email": user.email or ""
+                } if user else None,
+                "seller": {
+                    "id": seller.id,
+                    "business_name": seller.business_name or "",
+                    "owner_firstname": seller.owner_firstname or "",
+                    "owner_lastname": seller.owner_lastname or ""
+                } if seller else None
+            }
+            result.append(transaction_dict)
+        except Exception as e:
+            logger.error(f"Error processing transaction {payment.id}: {e}")
+            # Still include the transaction with minimal data
+            result.append({
+                "id": payment.id,
+                "offer_id": payment.offer_id,
+                "user_id": payment.user_id,
+                "seller_id": payment.seller_id,
+                "amount": float(payment.amount) if payment.amount else 0.0,
+                "total_amount": float(payment.total_amount) if payment.total_amount else 0.0,
+                "status": payment.status or "unknown",
+                "created_at": payment.created_at,
+                "error": "Failed to load related data"
+            })
+    
+    return {
+        "transactions": result,
+        "total": total_count,
+        "skip": skip,
+        "limit": limit
+    }
+
+@app.get("/admin/transactions/stats")
+async def get_transaction_stats(
+    current_admin: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get transaction statistics (Admin only)"""
+    from sqlalchemy import func
+    
+    total_transactions = db.query(func.count(Payment.id)).scalar()
+    completed_transactions = db.query(func.count(Payment.id)).filter(
+        Payment.status == "completed"
+    ).scalar()
+    pending_transactions = db.query(func.count(Payment.id)).filter(
+        Payment.status == "pending"
+    ).scalar()
+    failed_transactions = db.query(func.count(Payment.id)).filter(
+        Payment.status == "failed"
+    ).scalar()
+    
+    total_revenue = db.query(func.sum(Payment.amount)).filter(
+        Payment.status == "completed"
+    ).scalar() or 0.0
+    
+    return {
+        "total_transactions": total_transactions or 0,
+        "completed_transactions": completed_transactions or 0,
+        "pending_transactions": pending_transactions or 0,
+        "failed_transactions": failed_transactions or 0,
+        "total_revenue": float(total_revenue)
     }
 
 @app.get("/admin/users/{user_id}", response_model=AppUserResponse)

@@ -53,13 +53,23 @@ def initialize_firebase_admin():
         return True
         
     try:
-        # Check if already initialized
-        firebase_admin.get_app()
-        _firebase_app = firebase_admin.get_app()
-        logger.info("Firebase Admin SDK already initialized")
-        return True
-    except ValueError:
-        # Not initialized, proceed with initialization
+        # Check if already initialized with our custom name
+        try:
+            _firebase_app = firebase_admin.get_app('smart_farmer_app')
+            logger.info("Firebase Admin SDK already initialized (smart_farmer_app)")
+            return True
+        except ValueError:
+            # Try default app
+            try:
+                _firebase_app = firebase_admin.get_app()
+                logger.info("Firebase Admin SDK already initialized (default)")
+                return True
+            except ValueError:
+                # Not initialized, proceed with initialization
+                pass
+    except Exception as e:
+        logger.warning(f"Error checking Firebase app: {e}")
+        # Continue with initialization
         pass
     
     try:
@@ -67,23 +77,31 @@ def initialize_firebase_admin():
         
         # Method 1: Use service account file
         if FIREBASE_ADMIN_SDK_PATH and os.path.exists(FIREBASE_ADMIN_SDK_PATH):
-            cred = credentials.Certificate(FIREBASE_ADMIN_SDK_PATH)
-            logger.info(f"Using Firebase Admin SDK file: {FIREBASE_ADMIN_SDK_PATH}")
+            try:
+                cred = credentials.Certificate(FIREBASE_ADMIN_SDK_PATH)
+                logger.info(f"Using Firebase Admin SDK file: {FIREBASE_ADMIN_SDK_PATH}")
+            except Exception as e:
+                logger.error(f"Failed to load credentials from file: {e}")
+                return False
             
         # Method 2: Use environment variables
         elif all([FIREBASE_PRIVATE_KEY_ID, FIREBASE_PRIVATE_KEY, FIREBASE_CLIENT_EMAIL, FIREBASE_CLIENT_ID]):
-            service_account_info = {
-                "type": "service_account",
-                "project_id": FIREBASE_PROJECT_ID,
-                "private_key_id": FIREBASE_PRIVATE_KEY_ID,
-                "private_key": FIREBASE_PRIVATE_KEY,
-                "client_email": FIREBASE_CLIENT_EMAIL,
-                "client_id": FIREBASE_CLIENT_ID,
-                "auth_uri": FIREBASE_AUTH_URI,
-                "token_uri": FIREBASE_TOKEN_URI,
-            }
-            cred = credentials.Certificate(service_account_info)
-            logger.info("Using Firebase Admin SDK from environment variables")
+            try:
+                service_account_info = {
+                    "type": "service_account",
+                    "project_id": FIREBASE_PROJECT_ID,
+                    "private_key_id": FIREBASE_PRIVATE_KEY_ID,
+                    "private_key": FIREBASE_PRIVATE_KEY,
+                    "client_email": FIREBASE_CLIENT_EMAIL,
+                    "client_id": FIREBASE_CLIENT_ID,
+                    "auth_uri": FIREBASE_AUTH_URI,
+                    "token_uri": FIREBASE_TOKEN_URI,
+                }
+                cred = credentials.Certificate(service_account_info)
+                logger.info("Using Firebase Admin SDK from environment variables")
+            except Exception as e:
+                logger.error(f"Failed to create credentials from environment variables: {e}")
+                return False
             
         else:
             logger.error("No valid Firebase credentials found. Please set up either:")
@@ -91,13 +109,34 @@ def initialize_firebase_admin():
             logger.error("2. Environment variables: FIREBASE_PRIVATE_KEY_ID, FIREBASE_PRIVATE_KEY, etc.")
             return False
         
-        # Initialize the app
-        _firebase_app = firebase_admin.initialize_app(cred, {
-            'projectId': FIREBASE_PROJECT_ID,
-        })
+        # Validate project ID
+        if not FIREBASE_PROJECT_ID or not FIREBASE_PROJECT_ID.strip():
+            logger.error("FIREBASE_PROJECT_ID is required but not set")
+            return False
         
-        logger.info("Firebase Admin SDK initialized successfully")
-        return True
+        # Initialize the app with explicit project ID
+        try:
+            _firebase_app = firebase_admin.initialize_app(
+                cred, 
+                {
+                    'projectId': FIREBASE_PROJECT_ID.strip(),
+                },
+                name='smart_farmer_app'  # Use a unique name to avoid conflicts
+            )
+            logger.info(f"Firebase Admin SDK initialized successfully for project: {FIREBASE_PROJECT_ID}")
+            return True
+        except ValueError as e:
+            # App might already be initialized
+            if "already exists" in str(e).lower():
+                logger.info("Firebase Admin SDK already initialized")
+                try:
+                    _firebase_app = firebase_admin.get_app('smart_farmer_app')
+                except ValueError:
+                    _firebase_app = firebase_admin.get_app()
+                return True
+            else:
+                logger.error(f"Failed to initialize Firebase Admin SDK: {e}")
+                return False
         
     except Exception as e:
         logger.error(f"Failed to initialize Firebase Admin SDK: {str(e)}")
@@ -118,16 +157,56 @@ def validate_fcm_config() -> bool:
         logger.error("Firebase Admin SDK not available. Please install: pip install firebase-admin")
         return False
         
-    if not FIREBASE_PROJECT_ID:
+    if not FIREBASE_PROJECT_ID or not FIREBASE_PROJECT_ID.strip():
         logger.error("Firebase Project ID not configured. Please set FIREBASE_PROJECT_ID in environment")
         return False
     
+    # Initialize Firebase Admin SDK
     initialized = initialize_firebase_admin()
     if not initialized:
         logger.error("Firebase Admin SDK initialization failed. Check your credentials.")
         return False
+    
+    # Verify the app is properly initialized - try multiple app names
+    try:
+        app = None
+        # Try to get the app with our custom name first
+        try:
+            app = firebase_admin.get_app('smart_farmer_app')
+        except ValueError:
+            # Try default app
+            try:
+                app = firebase_admin.get_app()
+            except ValueError:
+                # App doesn't exist, try to initialize again
+                logger.warning("Firebase app not found, attempting to re-initialize...")
+                if initialize_firebase_admin():
+                    try:
+                        app = firebase_admin.get_app('smart_farmer_app')
+                    except ValueError:
+                        app = firebase_admin.get_app()
+                else:
+                    raise ValueError("Failed to initialize Firebase app")
         
-    return True
+        if app:
+            if hasattr(app, 'project_id') and app.project_id != FIREBASE_PROJECT_ID.strip():
+                logger.warning(f"Firebase app project ID ({app.project_id}) doesn't match configured project ID ({FIREBASE_PROJECT_ID})")
+            logger.info("Firebase app verified successfully")
+            return True
+        else:
+            logger.error("Firebase app is None after initialization")
+            return False
+            
+    except ValueError as e:
+        if "does not exist" in str(e):
+            logger.error("Firebase app does not exist. Attempting to initialize...")
+            if initialize_firebase_admin():
+                return True
+        logger.error(f"Failed to verify Firebase app: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error verifying Firebase app: {e}")
+        return False
 
 
 def send_notification(
@@ -332,33 +411,88 @@ def send_multicast_notification(
         for batch_index, batch_tokens in enumerate(batches):
             logger.info(f"Processing batch {batch_index + 1}/{len(batches)} with {len(batch_tokens)} tokens")
             
-            # Create multicast message
-            message = messaging.MulticastMessage(
-                notification=messaging.Notification(title=title, body=body),
-                data=string_data,
-                tokens=batch_tokens,
-                android=android_config,
-                apns=apns_config
-            )
-            
-            # Send the batch
-            response = messaging.send_multicast(message)
-            
-            total_success += response.success_count
-            total_failure += response.failure_count
-            
-            # Process individual responses
-            for idx, resp in enumerate(response.responses):
-                if not resp.success:
-                    token = batch_tokens[idx]
-                    error = resp.exception
+            try:
+                # Create multicast message
+                message = messaging.MulticastMessage(
+                    notification=messaging.Notification(title=title, body=body),
+                    data=string_data,
+                    tokens=batch_tokens,
+                    android=android_config,
+                    apns=apns_config
+                )
+                
+                # Send the batch with error handling
+                try:
+                    # Ensure we're using the correct Firebase app
+                    app = None
+                    try:
+                        app = firebase_admin.get_app('smart_farmer_app')
+                    except ValueError:
+                        try:
+                            app = firebase_admin.get_app()
+                        except ValueError:
+                            pass
                     
-                    if isinstance(error, messaging.UnregisteredError):
-                        invalid_tokens.append(token)
-                        logger.warning(f"Token {token[:10]}... is unregistered")
+                    if app:
+                        response = messaging.send_multicast(message, app=app)
                     else:
-                        failed_tokens.append(token)
-                        logger.error(f"Failed to send to {token[:10]}...: {error}")
+                        response = messaging.send_multicast(message)
+                        
+                except Exception as send_error:
+                    error_str = str(send_error)
+                    # Check if it's the 404 batch error
+                    if '404' in error_str or '/batch' in error_str or 'not found' in error_str.lower():
+                        logger.warning(f"Batch endpoint error detected, falling back to individual sends: {send_error}")
+                        # If batch send fails due to endpoint issue, try sending individually
+                        for token in batch_tokens:
+                            try:
+                                individual_message = messaging.Message(
+                                    notification=messaging.Notification(title=title, body=body),
+                                    data=string_data,
+                                    token=token,
+                                    android=android_config,
+                                    apns=apns_config
+                                )
+                                if app:
+                                    messaging.send(individual_message, app=app)
+                                else:
+                                    messaging.send(individual_message)
+                                total_success += 1
+                            except messaging.UnregisteredError:
+                                invalid_tokens.append(token)
+                                total_failure += 1
+                            except Exception as e:
+                                failed_tokens.append(token)
+                                total_failure += 1
+                                logger.error(f"Failed to send to {token[:10]}...: {e}")
+                        continue
+                    else:
+                        # Re-raise if it's a different error
+                        raise
+                
+                total_success += response.success_count
+                total_failure += response.failure_count
+                
+                # Process individual responses
+                for idx, resp in enumerate(response.responses):
+                    if not resp.success:
+                        token = batch_tokens[idx]
+                        error = resp.exception
+                        
+                        if isinstance(error, messaging.UnregisteredError):
+                            invalid_tokens.append(token)
+                            logger.warning(f"Token {token[:10]}... is unregistered")
+                        else:
+                            failed_tokens.append(token)
+                            logger.error(f"Failed to send to {token[:10]}...: {error}")
+            
+            except Exception as batch_error:
+                error_msg = f"Error processing batch {batch_index + 1}: {str(batch_error)}"
+                logger.error(error_msg)
+                # Continue with next batch instead of failing completely
+                total_failure += len(batch_tokens)
+                failed_tokens.extend(batch_tokens)
+                continue
             
             # Small delay between batches to avoid rate limiting
             if batch_index < len(batches) - 1:
@@ -367,6 +501,8 @@ def send_multicast_notification(
     except Exception as e:
         error_msg = f"Batch notification error: {str(e)}"
         logger.error(error_msg)
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return {"success": False, "error": error_msg}
     
     result = {
@@ -571,9 +707,12 @@ def send_push_notification(fcm_token: str, title: str, body: str, data: Optional
     return success
 
 
-# Initialize Firebase Admin SDK when module is imported
+# Initialize Firebase Admin SDK when module is imported (non-blocking)
 if __name__ != "__main__":
-    initialize_firebase_admin()
+    try:
+        initialize_firebase_admin()
+    except Exception as e:
+        logger.warning(f"Firebase initialization on import failed (will retry on first use): {e}")
 def send_data_message(
     fcm_token: str,
     data: Dict,
