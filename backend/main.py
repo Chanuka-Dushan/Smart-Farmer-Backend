@@ -874,12 +874,22 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
         raise HTTPException(status_code=401, detail="Authentication failed")
 
 # --- 5. API Endpoints ---
-app = FastAPI()
+# Note: If backend is behind reverse proxy at /backend path, uncomment root_path
+# For direct deployment without reverse proxy, leave root_path empty
+ROOT_PATH = os.getenv("ROOT_PATH", "")  # Set to "/backend" if behind proxy
+app = FastAPI(root_path=ROOT_PATH, title="Smart Farmer API")
 
-# Add CORS middleware
+# Add CORS middleware - Allow all origins in development, specific in production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["farmerlk.me", "www.farmerlk.me", "http://localhost:3000", "http://localhost", "http://localhost:8000"],
+    allow_origins=[
+        "https://farmerlk.me",
+        "https://www.farmerlk.me",
+        "http://localhost:3000",
+        "http://localhost",
+        "http://localhost:8000",
+        "*"  # Allow all origins - remove in production if needed
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
