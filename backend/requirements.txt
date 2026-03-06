@@ -66,4 +66,4 @@ torchvision==0.25.0
 # Tyre Health System Dependencies
 ultralytics>=8.0.0  # YOLOv8 for tyre damage detection
 openai>=1.0.0  # OpenAI API for conversational AI
-opencv-python>=4.8.0  # OpenCV for image processing
+opencv-python-headless>=4.8.0  # OpenCV for headless image processing (no GUI dependencies)

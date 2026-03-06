@@ -71,7 +71,7 @@ try:
     logger.info("✓ Tyre Health System available")
 except ImportError as e:
     logger.error(f"❌ Tyre Health System import failed: {e}")
-    logger.error("Please install: pip install ultralytics>=8.0.0 openai>=1.0.0 opencv-python>=4.8.0")
+    logger.error("Please install: pip install ultralytics>=8.0.0 openai>=1.0.0 opencv-python-headless>=4.8.0")
 except Exception as e:
     logger.error(f"❌ Tyre Health System initialization error: {e}", exc_info=True)
 
@@ -1387,7 +1387,7 @@ async def detect_tyre_damage(
     if not TYRE_SYSTEM_AVAILABLE:
         raise HTTPException(
             status_code=503,
-            detail="Tyre detection system not available. Please check /health endpoint for diagnostics. Ensure ultralytics, openai, and opencv-python are installed."
+            detail="Tyre detection system not available. Please check /health endpoint for diagnostics. Ensure ultralytics, openai, and opencv-python-headless are installed."
         )
     
     try:
