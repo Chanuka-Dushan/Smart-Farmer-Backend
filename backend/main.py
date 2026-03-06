@@ -1,7 +1,7 @@
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, List, Dict
 from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
@@ -52,6 +52,17 @@ from routes import blockchain_routes
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Tyre Health System imports (import after logger is configured)
+try:
+    from tyre_damage_detector import get_detector as get_tyre_detector
+    from tyre_ai_assistant import get_assistant as get_tyre_assistant
+    from tyre_life_predictor import get_predictor as get_tyre_predictor
+    TYRE_SYSTEM_AVAILABLE = True
+    logger.info("✓ Tyre Health System available")
+except ImportError as e:
+    TYRE_SYSTEM_AVAILABLE = False
+    logger.warning(f"⚠ Tyre Health System not available: {e}")
 
 # Load environment variables from .env file
 load_dotenv()
@@ -634,6 +645,43 @@ class PartUpdate(BaseModel):
 
     class Config:
         from_attributes = True
+
+# Tyre Health Schemas
+class TyreDamageDetectionResponse(BaseModel):
+    success: bool
+    image_path: str
+    detections_count: int
+    detections: List[Dict]
+    primary_damage: Optional[Dict]
+    annotated_image_path: Optional[str]
+    model: str
+    timestamp: str
+
+class VoiceChatRequest(BaseModel):
+    session_id: str
+    message: str
+
+class VoiceChatStartRequest(BaseModel):
+    damage_type: str
+    confidence: float
+    severity: str
+    lifespan_reduction: float
+    language: str = "si"  # Default to Sinhala
+
+class VoiceChatResponse(BaseModel):
+    session_id: str
+    message: str
+    state: str
+    prediction: Optional[Dict] = None
+
+class TyreLifePredictionRequest(BaseModel):
+    damage_type: str
+    damage_severity: str
+    lifespan_reduction: float
+    usage_hours_per_week: float
+    months_used: float
+    tyre_type: str = "default"
+    confidence: float = 0.8
 
 # --- 4. Database Dependency ---
 def get_db():
@@ -1303,6 +1351,275 @@ async def predict_lifecycle(
             status_code=500, 
             detail=f"Prediction failed: {str(e)}"
         )
+
+# ============================================================================
+# TYRE HEALTH & DAMAGE DETECTION SYSTEM (YOLOv8 + AI Assistant)
+# ============================================================================
+
+@app.post("/api/tyre/detect-damage")
+async def detect_tyre_damage(
+    image: UploadFile = File(...),
+    confidence_threshold: float = Form(0.25),
+    save_annotated: bool = Form(True)
+):
+    """
+    Detect tyre damage using YOLOv8 model
+    
+    Args:
+        image: Tyre image file
+        confidence_threshold: Minimum confidence for detection (default: 0.25)
+        save_annotated: Whether to save annotated image (default: True)
+    
+    Returns:
+        Detection results with damage type, confidence, severity, and bounding boxes
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Tyre detection system not available"
+        )
+    
+    try:
+        logger.info(f"🚗 Tyre damage detection request: {image.filename}")
+        
+        # Create temp directory for uploaded images
+        temp_dir = Path("temp") / "tyre_images"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save uploaded image temporarily
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_extension = Path(image.filename).suffix
+        temp_filename = f"tyre_{timestamp}{file_extension}"
+        temp_path = temp_dir / temp_filename
+        
+        with open(temp_path, "wb") as f:
+            content = await image.read()
+            f.write(content)
+        
+        logger.info(f"💾 Image saved to: {temp_path}")
+        
+        # Get detector and run detection
+        detector = get_tyre_detector()
+        result = detector.detect_damage(
+            str(temp_path),
+            confidence_threshold=confidence_threshold,
+            save_annotated=save_annotated
+        )
+        
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("error", "Detection failed")
+            )
+        
+        logger.info(f"✅ Detection complete: {result['detections_count']} damage(s) found")
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Tyre damage detection error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Detection failed: {str(e)}"
+        )
+
+
+@app.post("/api/tyre/predict-life")
+async def predict_tyre_life(request: TyreLifePredictionRequest):
+    """
+    Predict remaining tyre life based on damage and usage
+    
+    Args:
+        request: Prediction request with damage info and usage data
+    
+    Returns:
+        Prediction with remaining months, status, and recommendations
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Tyre prediction system not available"
+        )
+    
+    try:
+        logger.info(f"🔮 Tyre life prediction: {request.damage_type}")
+        
+        # Get predictor and calculate
+        predictor = get_tyre_predictor()
+        result = predictor.predict_remaining_life(
+            damage_type=request.damage_type,
+            damage_severity=request.damage_severity,
+            lifespan_reduction=request.lifespan_reduction,
+            usage_hours_per_week=request.usage_hours_per_week,
+            months_used=request.months_used,
+            tyre_type=request.tyre_type,
+            confidence=request.confidence
+        )
+        
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("error", "Prediction failed")
+            )
+        
+        logger.info(f"✅ Prediction complete: {result['prediction']['remaining_life_months']} months")
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Tyre life prediction error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Prediction failed: {str(e)}"
+        )
+
+
+@app.post("/api/tyre/voice-chat/start")
+async def start_voice_chat(request: VoiceChatStartRequest):
+    """
+    Start a conversational AI session for tyre health
+    
+    Args:
+        request: Initial damage information and language preference
+    
+    Returns:
+        Session ID and initial AI message
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Tyre AI assistant not available"
+        )
+    
+    try:
+        # Generate unique session ID
+        session_id = f"tyre_{uuid.uuid4().hex[:16]}"
+        
+        logger.info(f"💬 Starting voice chat session: {session_id}")
+        
+        # Prepare damage info
+        damage_info = {
+            "damage_type": request.damage_type,
+            "confidence": request.confidence,
+            "severity": request.severity,
+            "lifespan_reduction": request.lifespan_reduction
+        }
+        
+        # Get assistant and start conversation
+        assistant = get_tyre_assistant()
+        result = assistant.start_conversation(
+            session_id=session_id,
+            damage_info=damage_info,
+            language=request.language
+        )
+        
+        logger.info(f"✅ Chat session started: {session_id}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Voice chat start error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to start chat: {str(e)}"
+        )
+
+
+@app.post("/api/tyre/voice-chat/continue")
+async def continue_voice_chat(request: VoiceChatRequest):
+    """
+    Continue an existing voice chat conversation
+    
+    Args:
+        request: Session ID and user message (from speech-to-text)
+    
+    Returns:
+        AI response (for text-to-speech conversion)
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Tyre AI assistant not available"
+        )
+    
+    try:
+        logger.info(f"💬 Continue chat: {request.session_id}")
+        
+        # Get assistant and continue conversation
+        assistant = get_tyre_assistant()
+        result = assistant.continue_conversation(
+            session_id=request.session_id,
+            user_message=request.message
+        )
+        
+        if "error" in result:
+            raise HTTPException(
+                status_code=404,
+                detail=result["error"]
+            )
+        
+        logger.info(f"✅ Chat response generated")
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Voice chat continue error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Chat failed: {str(e)}"
+        )
+
+
+@app.get("/api/tyre/voice-chat/{session_id}/summary")
+async def get_chat_summary(session_id: str):
+    """
+    Get conversation summary and collected data
+    
+    Args:
+        session_id: Chat session ID
+    
+    Returns:
+        Conversation summary with collected usage data and prediction
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Tyre AI assistant not available"
+        )
+    
+    try:
+        logger.info(f"📊 Get chat summary: {session_id}")
+        
+        # Get assistant and retrieve summary
+        assistant = get_tyre_assistant()
+        summary = assistant.get_conversation_summary(session_id)
+        
+        if summary is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Session not found"
+            )
+        
+        return summary
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Get summary error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get summary: {str(e)}"
+        )
+
+# ============================================================================
+# END TYRE HEALTH SYSTEM
+# ============================================================================
 
 # --- Part Identification Endpoint ---
 @app.post("/api/identify-part")
