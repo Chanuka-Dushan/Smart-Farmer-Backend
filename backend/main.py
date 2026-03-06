@@ -1857,6 +1857,47 @@ async def update_seller_location(
     
     return current_seller
 
+@app.delete("/api/sellers/me", response_model=MessageResponse)
+async def delete_seller_account(
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Delete current seller's account and all associated data"""
+    try:
+        seller_id = current_seller.id
+        
+        # Delete all spare part offers created by this seller
+        db.query(SparePartOffer).filter(SparePartOffer.seller_id == seller_id).delete()
+        
+        # Keep payments for financial record-keeping (they'll reference a deleted seller)
+        # This is important for audit trails and accounting purposes
+        
+        # Update blockchain ownership records (nullify seller ownership)
+        db.query(BcOwnershipRecord).filter(
+            BcOwnershipRecord.current_owner_seller_id == seller_id
+        ).update({"current_owner_seller_id": None})
+        
+        # Delete notifications specifically targeted at this seller
+        db.query(Notification).filter(
+            Notification.user_type == "seller",
+            Notification.target_user_id == seller_id
+        ).delete()
+        
+        # Finally, delete the seller account
+        db.delete(current_seller)
+        db.commit()
+        
+        logger.info(f"Seller account deleted: {seller_id}")
+        return MessageResponse(message="Account deleted successfully", success=True)
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting seller account: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete account: {str(e)}"
+        )
+
 @app.get("/api/sellers/locations")
 async def get_seller_locations(
     db: Session = Depends(get_db)
