@@ -1,4 +1,5 @@
 import os
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict
@@ -31,6 +32,9 @@ from io import BytesIO
 from PIL import Image
 import requests
 import json
+
+# Ensure local modules are found first (fix cv2 config conflict)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # ML helpers (import later so environment variables are loaded)
 from ml_utils import ImagePreprocessor, PredictionValidator, clip_prediction, PartIdentifier, TORCH_AVAILABLE
