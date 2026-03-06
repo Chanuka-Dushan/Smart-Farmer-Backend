@@ -18,7 +18,7 @@ class TyreLifePredictor:
         "truck": 48,        # 4 years
         "bus": 60,          # 5 years
         "motorcycle": 24,   # 2 years
-        "tractor":36,      # 4 years
+        "tractor": 36,      # 3 years
         "default": 36       # Default to car tyres
     }
     

@@ -58,6 +58,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Tyre Health System imports (import after logger is configured)
+TYRE_SYSTEM_AVAILABLE = False
+get_tyre_detector = None
+get_tyre_assistant = None
+get_tyre_predictor = None
+
 try:
     from tyre_damage_detector import get_detector as get_tyre_detector
     from tyre_ai_assistant import get_assistant as get_tyre_assistant
@@ -65,8 +70,10 @@ try:
     TYRE_SYSTEM_AVAILABLE = True
     logger.info("✓ Tyre Health System available")
 except ImportError as e:
-    TYRE_SYSTEM_AVAILABLE = False
-    logger.warning(f"⚠ Tyre Health System not available: {e}")
+    logger.error(f"❌ Tyre Health System import failed: {e}")
+    logger.error("Please install: pip install ultralytics>=8.0.0 openai>=1.0.0 opencv-python>=4.8.0")
+except Exception as e:
+    logger.error(f"❌ Tyre Health System initialization error: {e}", exc_info=True)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -1380,7 +1387,7 @@ async def detect_tyre_damage(
     if not TYRE_SYSTEM_AVAILABLE:
         raise HTTPException(
             status_code=503,
-            detail="Tyre detection system not available"
+            detail="Tyre detection system not available. Please check /health endpoint for diagnostics. Ensure ultralytics, openai, and opencv-python are installed."
         )
     
     try:
@@ -1785,8 +1792,16 @@ def home():
 
 @app.get("/health")
 def health():
-    """Health check endpoint for monitoring"""
-    return {"status": "healthy"}
+    """Health check endpoint with system diagnostics"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "features": {
+            "tensorflow": tensorflow_available,
+            "tyre_system": TYRE_SYSTEM_AVAILABLE,
+            "stripe": stripe is not None,
+        }
+    }
 
 # REGISTRATION ENDPOINT DISABLED - ADMIN ONLY LOGIN
 # @app.post("/register")
