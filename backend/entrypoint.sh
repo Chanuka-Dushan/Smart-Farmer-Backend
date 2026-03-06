@@ -9,8 +9,13 @@ ls -la
 echo "Python version:"
 python --version
 
+echo "🔧 Fixing OpenCV installation (removing GUI version)..."
+pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null || true
+pip install --no-cache-dir opencv-python-headless>=4.8.0
+echo "✅ OpenCV headless ready"
+
 echo "Installed packages:"
-pip list | grep -E "gunicorn|uvicorn|fastapi"
+pip list | grep -E "gunicorn|uvicorn|fastapi|opencv"
 
 echo "Starting Gunicorn..."
 exec gunicorn main:app \

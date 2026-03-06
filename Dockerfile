@@ -20,7 +20,9 @@ COPY backend/requirements.txt .
 
 # Install Python dependencies
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null || true && \
+    pip install --no-cache-dir opencv-python-headless>=4.8.0
 
 # Copy application code
 COPY backend/ /app/
