@@ -64,9 +64,9 @@ torch==2.10.0
 torchvision==0.25.0
 
 # Tyre Health System Dependencies
-# NOTE: ultralytics may try to install opencv-python as a dependency
+# NOTE: ultralytics MUST be installed with --no-deps in Dockerfile to prevent opencv-python
 # We explicitly use opencv-python-headless to avoid GUI library issues (libGL.so.1)
-# The Dockerfile and entrypoint.sh enforce this by uninstalling opencv-python if present
-ultralytics>=8.0.0  # YOLOv8 for tyre damage detection
+# The Dockerfile installs ultralytics and its deps manually to enforce headless opencv
+ultralytics==8.2.103  # YOLOv8 for tyre damage detection (installed with --no-deps in Dockerfile)
 openai>=1.0.0  # OpenAI API for conversational AI
-opencv-python-headless>=4.8.0  # OpenCV for headless image processing (no GUI dependencies)
+opencv-python-headless==4.10.0.84  # OpenCV for headless image processing (NO GUI dependencies)

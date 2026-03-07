@@ -1,42 +1,55 @@
 #!/bin/sh
 set -e
 
-# Force output to stderr to ensure visibility
-exec 2>&1
+# Force ALL output to stderr to ensure visibility in logs
+exec 1>&2
 
-echo "========================================" >&2
-echo "🚀 Starting Smart Farmer Backend" >&2
-echo "========================================" >&2
-echo "Current working directory: $(pwd)" >&2
-echo "Python version: $(python --version)" >&2
+echo "========================================"
+echo "🚀 Starting Smart Farmer Backend"
+echo "========================================"
+echo "Current working directory: $(pwd)"
+echo "Python version: $(python --version)"
+echo "User: $(whoami)"
 
-echo "" >&2
-echo "🔧 OpenCV Installation Check" >&2
-echo "========================================" >&2
+echo ""
+echo "🔧 OpenCV Installation Check"
+echo "========================================"
 
 # Show current opencv packages
-echo "Current OpenCV packages:" >&2
-pip list 2>&1 | grep -i opencv || echo "No opencv packages found" >&2
+echo "Current OpenCV packages:"
+pip list 2>&1 | grep -i opencv || echo "⚠️  No opencv packages found"
 
-# Check if GUI version is installed
+# CRITICAL CHECK: If GUI version exists, ABORT startup
 if pip list 2>&1 | grep -E "^opencv-python " | grep -v headless > /dev/null 2>&1; then
-    echo "❌ CRITICAL: opencv-python (GUI version) detected!" >&2
-    echo "   Attempting to fix..." >&2
+    echo "❌❌❌ CRITICAL FAILURE ❌❌❌"
+    echo "opencv-python (GUI version) STILL DETECTED!"
+    echo "This should have been blocked during build."
+    echo "The application CANNOT start with GUI opencv."
+    echo ""
+    echo "Emergency fix attempt..."
     pip uninstall -y opencv-python opencv-contrib-python 2>&1 || true
-    pip install --force-reinstall --no-cache-dir opencv-python-headless>=4.8.0 2>&1
-    echo "✅ OpenCV headless reinstalled" >&2
+    pip install --force-reinstall --no-cache-dir opencv-python-headless==4.10.0.84 2>&1
+    echo ""
+    echo "Retrying opencv check..."
+    pip list 2>&1 | grep -i opencv
+    
+    if pip list 2>&1 | grep -E "^opencv-python " | grep -v headless > /dev/null 2>&1; then
+        echo "❌ Emergency fix FAILED. Aborting startup."
+        exit 1
+    fi
+    echo "✅ Emergency fix successful"
 else
-    echo "✅ OpenCV configuration looks correct" >&2
+    echo "✅ OpenCV configuration correct - only headless version present"
 fi
 
-echo "" >&2
-echo "Final OpenCV packages:" >&2
-pip list 2>&1 | grep -i opencv || echo "No opencv packages!" >&2
+echo ""
+echo "Final OpenCV verification:"
+pip list 2>&1 | grep -i opencv
 
-echo "" >&2
-echo "========================================" >&2
-echo "Starting Gunicorn..." >&2
-echo "========================================" >&2
+echo ""
+echo "========================================"
+echo "Starting Gunicorn..."
+echo "========================================"
 exec gunicorn main:app \
     --worker-class uvicorn.workers.UvicornWorker \
     --workers 4 \
