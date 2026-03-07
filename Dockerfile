@@ -21,14 +21,15 @@ COPY backend/constraints.txt .
 
 # Install Python dependencies - use constraints to BLOCK opencv-python at pip level
 # This prevents ultralytics from installing opencv-python (GUI version)
-RUN pip install --upgrade pip && \
-    echo "📦 Step 1: Installing opencv-python-headless..." && \
-    pip install --no-cache-dir opencv-python-headless>=4.8.0 && \
-    echo "📦 Step 2: Installing all requirements with constraints (blocks opencv-python)..." && \
-    PIP_CONSTRAINT=constraints.txt pip install --no-cache-dir -r requirements.txt && \
-    echo "✅ Final OpenCV verification:" && \
-    pip list | grep opencv && \
-    echo "✅ Build complete - opencv-python should NOT appear above"
+# Use pip cache to speed up DigitalOcean rebuilds (cache persists between builds)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip && \
+    echo "📦 Installing opencv-python-headless..." && \
+    pip install opencv-python-headless>=4.8.0 && \
+    echo "📦 Installing requirements with constraints..." && \
+    PIP_CONSTRAINT=constraints.txt pip install -r requirements.txt && \
+    echo "✅ OpenCV check:" && \
+    pip list | grep opencv
 
 # Copy application code
 COPY backend/ /app/
