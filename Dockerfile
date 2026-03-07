@@ -18,11 +18,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements
 COPY backend/requirements.txt .
 
-# Install Python dependencies
+# Install Python dependencies - force opencv-headless only
+# Strategy: Install opencv-headless first, then uninstall GUI version after all deps
 RUN pip install --upgrade pip && \
+    pip install --no-cache-dir opencv-python-headless>=4.8.0 && \
     pip install --no-cache-dir -r requirements.txt && \
     pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null || true && \
-    pip install --no-cache-dir opencv-python-headless>=4.8.0
+    if pip list | grep -E "^opencv-python " | grep -v headless; then \
+        echo "❌ ERROR: opencv-python (GUI) detected! Removing..." && \
+        pip uninstall -y opencv-python opencv-contrib-python && \
+        pip install --force-reinstall --no-cache-dir opencv-python-headless>=4.8.0; \
+    fi && \
+    echo "✅ OpenCV verification:" && \
+    pip list | grep opencv
 
 # Copy application code
 COPY backend/ /app/
