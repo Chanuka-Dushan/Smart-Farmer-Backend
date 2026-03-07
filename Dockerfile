@@ -20,20 +20,18 @@ COPY backend/requirements.txt .
 COPY backend/constraints.txt .
 
 # Install Python dependencies - FORCE opencv-python-headless only
-# Strategy: Install headless first, then install ultralytics without its opencv dependency
+# Strategy: Use constraints.txt to block GUI opencv, install headless first
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip && \
-    echo "📦 Step 1: Install opencv-python-headless first..." && \
-    pip install opencv-python-headless>=4.8.0 && \
-    echo "📦 Step 2: Install ultralytics WITHOUT opencv (--no-deps then manually install deps)..." && \
-    pip install --no-deps ultralytics>=8.0.0 && \
-    pip install torch torchvision pillow pyyaml requests tqdm matplotlib seaborn pandas psutil py-cpuinfo && \
-    echo "📦 Step 3: Install remaining requirements..." && \
-    pip install -r requirements.txt && \
-    echo "📦 Step 4: FORCE remove any opencv-python (GUI)..." && \
+    echo "📦 Step 1: Install opencv-python-headless FIRST..." && \
+    pip install --no-cache-dir opencv-python-headless>=4.8.0 && \
+    echo "📦 Step 2: Install ALL requirements using constraints to block GUI opencv..." && \
+    pip install --no-cache-dir -c constraints.txt -r requirements.txt && \
+    echo "📦 Step 3: VERIFY and remove any opencv-python (GUI) if present..." && \
     pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null || true && \
-    pip install --force-reinstall --no-deps opencv-python-headless>=4.8.0 && \
-    echo "✅ Final check - should ONLY show opencv-python-headless:" && \
+    echo "📦 Step 4: Final safety check - reinstall headless..." && \
+    pip install --no-cache-dir --force-reinstall --no-deps opencv-python-headless>=4.8.0 && \
+    echo "✅ Final verification - should ONLY show opencv-python-headless:" && \
     pip list | grep opencv
 
 # Copy application code
