@@ -195,3 +195,61 @@ class RatingRequest(BaseModel):
     seller_id: int
     rating: int = Field(..., ge=1, le=5)
     comment: Optional[str] = None
+
+# ============= Spare Parts / Compatibility Schemas (Tharushi's Component) =============
+
+from typing import Optional, Dict, Any
+from pydantic import BaseModel, ConfigDict
+
+
+# Shared fields
+class PartBase(BaseModel):
+    name: str
+    brand: str
+    machine_model: str
+
+    description: Optional[str] = None
+    category: Optional[str] = None
+
+    diameter: Optional[float] = None
+    material: Optional[str] = None
+
+    price: float
+    lifespan: Optional[int] = None
+
+    specs_json: Optional[Dict[str, Any]] = None
+    image_url: Optional[str] = None
+
+
+# Create
+class PartCreate(PartBase):
+    """Request model to create a spare part"""
+    pass
+
+
+# Update (all optional)
+class PartUpdate(BaseModel):
+    """Request model to update a spare part (partial update allowed)"""
+    name: Optional[str] = None
+    brand: Optional[str] = None
+    machine_model: Optional[str] = None
+
+    description: Optional[str] = None
+    category: Optional[str] = None
+
+    diameter: Optional[float] = None
+    material: Optional[str] = None
+
+    price: Optional[float] = None
+    lifespan: Optional[int] = None
+
+    specs_json: Optional[Dict[str, Any]] = None
+    image_url: Optional[str] = None
+
+
+# Response
+class PartResponse(PartBase):
+    """Response model returned for a spare part"""
+    id: int
+
+    model_config = ConfigDict(from_attributes=True)

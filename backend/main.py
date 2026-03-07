@@ -8,6 +8,8 @@ from fastapi.security import HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from pydantic import BaseModel
+from models.schemas import PartCreate, PartResponse, PartUpdate
+
 from sqlalchemy import create_engine, Column, String, Integer, Boolean, Text, DateTime, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -31,6 +33,7 @@ from io import BytesIO
 from PIL import Image
 import requests
 import json
+
 
 # ML helpers (import later so environment variables are loaded)
 from ml_utils import ImagePreprocessor, PredictionValidator, clip_prediction, PartIdentifier, TORCH_AVAILABLE
@@ -148,7 +151,8 @@ connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+from db_base import Base
+
 
 # --- 2. Database Models (The Tables) ---
 class User(Base):
@@ -247,23 +251,6 @@ class SparePartOffer(Base):
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
-class Part(Base):
-    """Spare Part Master Model (Phase 1 – Data Foundation)"""
-    __tablename__ = "parts"
-
-    id = Column(Integer, primary_key=True, index=True)
-
-    name = Column(String(255), nullable=False)
-    brand = Column(String(255), nullable=False)
-    description = Column(String(255), nullable=False)
-    category = Column(String(200),nullable=False)
-
-    diameter = Column(Float, nullable=True)
-    material = Column(String(255), nullable=True)
-
-    price = Column(Float, nullable=False)
-    lifespan = Column(Integer, nullable=True) # lifespan in hours / months
-    image_url = Column(String(500), nullable=True)
 
 
 class Payment(Base):
@@ -328,6 +315,7 @@ class SavedPaymentMethod(Base):
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
 # Create the tables automatically
+from models.research import CompatibilityLabel, FeedbackEvent, PartVector, SalesTransaction, InventoryStock
 Base.metadata.create_all(bind=engine)
 
 # --- 3. Pydantic Models (Input Validation) ---
@@ -589,51 +577,7 @@ class NotificationResponse(BaseModel):
     class Config:
         from_attributes = True
 
-        # Parts Models - compatibility
-
-class PartCreate(BaseModel):
-    name: str
-    brand: str
-    description: str
-    category: str
-    diameter: Optional[float] = None
-    material: Optional[str] = None
-    price: float
-    lifespan: Optional[int] = None
-    image_url: Optional[str] = None
-
-
-class PartResponse(BaseModel):
-    id: int
-    name: str
-    brand: str
-    description: str
-    category: str
-    diameter: Optional[float]
-    material: Optional[str]
-    price: float
-    lifespan: Optional[int]
-    image_url: Optional[str] = None
-
-    class Config:
-        orm_mode = True
-
-
-class PartUpdate(BaseModel):
-    name: Optional[str] = None
-    brand: Optional[str] = None
-    description: Optional[str] = None
-    category: Optional[str] = None
-    diameter: Optional[float] = None
-    material: Optional[str] = None
-    price: Optional[float] = None
-    lifespan: Optional[int] = None
-    image_url: Optional[str] = None
-
-
-
-    class Config:
-        from_attributes = True
+       
 
 # --- 4. Database Dependency ---
 def get_db():
@@ -3251,15 +3195,18 @@ def create_part(
     current_admin: dict = Depends(get_current_user)  # Admin only
 ):
     """Create a new spare part (Admin only)"""
+
     new_part = Part(
         name=part_data.name,
         brand=part_data.brand,
+        machine_model=part_data.machine_model,          # ✅ IMPORTANT
         description=part_data.description,
         category=part_data.category,
         diameter=part_data.diameter,
         material=part_data.material,
         price=part_data.price,
         lifespan=part_data.lifespan,
+        specs_json=part_data.specs_json,                # ✅ IMPORTANT
         image_url=part_data.image_url
     )
 
@@ -3274,12 +3221,15 @@ def get_all_parts(db: Session = Depends(get_db)):
     """Get all spare parts"""
     return db.query(Part).all()
 
+
 @app.get("/api/parts/search-by-name")
 def search_part_by_name_and_brand(
     name: str,
     brand: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
+    """Search part by name (exact → partial fallback)"""
+
     # Exact match
     query = db.query(Part).filter(Part.name.ilike(name))
 
@@ -3291,7 +3241,8 @@ def search_part_by_name_and_brand(
         return {
             "id": part.id,
             "name": part.name,
-            "brand": part.brand
+            "brand": part.brand,
+            "machine_model": part.machine_model      # ✅ Added
         }
 
     # Partial match fallback
@@ -3307,11 +3258,9 @@ def search_part_by_name_and_brand(
     return {
         "id": part.id,
         "name": part.name,
-        "brand": part.brand
+        "brand": part.brand,
+        "machine_model": part.machine_model          # ✅ Added
     }
-
-
-
 
 
 @app.get("/api/parts/{part_id}", response_model=PartResponse)
@@ -3322,6 +3271,7 @@ def get_part_by_id(part_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Part not found")
     return part
 
+
 @app.put("/api/parts/{part_id}", response_model=PartResponse)
 def update_part(
     part_id: int,
@@ -3330,11 +3280,14 @@ def update_part(
     current_admin: dict = Depends(get_current_user)
 ):
     """Update a spare part (Admin only)"""
+
     part = db.query(Part).filter(Part.id == part_id).first()
     if not part:
         raise HTTPException(status_code=404, detail="Part not found")
 
-    for field, value in part_data.dict(exclude_unset=True).items():
+    update_data = part_data.dict(exclude_unset=True)
+
+    for field, value in update_data.items():
         setattr(part, field, value)
 
     db.commit()
@@ -3349,6 +3302,7 @@ def delete_part(
     current_admin: dict = Depends(get_current_user)
 ):
     """Delete a spare part (Admin only)"""
+
     part = db.query(Part).filter(Part.id == part_id).first()
     if not part:
         raise HTTPException(status_code=404, detail="Part not found")
@@ -3356,8 +3310,6 @@ def delete_part(
     db.delete(part)
     db.commit()
     return MessageResponse(message="Part deleted successfully")
-
-
 
 # ============= PAYMENT ENDPOINTS =============
 
