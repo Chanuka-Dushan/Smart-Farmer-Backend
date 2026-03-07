@@ -63,6 +63,23 @@ get_tyre_detector = None
 get_tyre_assistant = None
 get_tyre_predictor = None
 
+# CRITICAL: Fix OpenCV before importing tyre modules
+try:
+    logger.info("🔧 Running OpenCV preload fix...")
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, os.path.join(os.path.dirname(__file__), 'fix_opencv_preload.py')],
+        capture_output=True,
+        text=True,
+        timeout=30
+    )
+    if result.returncode == 0:
+        logger.info("✅ OpenCV preload fix completed")
+    else:
+        logger.warning(f"⚠️  OpenCV preload fix had issues: {result.stderr}")
+except Exception as e:
+    logger.warning(f"⚠️  Could not run OpenCV preload fix: {e}")
+
 try:
     from tyre_damage_detector import get_detector as get_tyre_detector
     from tyre_ai_assistant import get_assistant as get_tyre_assistant

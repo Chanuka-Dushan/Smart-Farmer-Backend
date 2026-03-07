@@ -6,11 +6,25 @@ import os
 import logging
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
-import cv2
 import numpy as np
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# Try to import OpenCV with helpful error message
+try:
+    import cv2
+    CV2_AVAILABLE = True
+    logger.info("✓ OpenCV (cv2) imported successfully")
+except ImportError as e:
+    CV2_AVAILABLE = False
+    if "libGL.so.1" in str(e):
+        logger.error("❌ OpenCV import failed: libGL.so.1 missing")
+        logger.error("This means opencv-python (GUI version) is installed instead of opencv-python-headless")
+        logger.error("Fix: pip uninstall opencv-python && pip install opencv-python-headless>=4.8.0")
+    else:
+        logger.error(f"❌ OpenCV import failed: {e}")
+    raise
 
 try:
     from ultralytics import YOLO
