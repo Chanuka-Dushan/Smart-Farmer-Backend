@@ -1,0 +1,4 @@
+# Force pip to NEVER install opencv-python (GUI version)
+# This prevents ultralytics from installing it as a dependency
+opencv-python-headless>=4.8.0
+opencv-python @ https://invalid.invalid/opencv-python-blocked

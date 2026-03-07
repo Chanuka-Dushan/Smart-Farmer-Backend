@@ -15,29 +15,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
+# Copy requirements and constraints
 COPY backend/requirements.txt .
+COPY backend/constraints.txt .
 
-# Install Python dependencies - force opencv-headless only
-# Strategy: Install opencv-headless first, then uninstall GUI version after all deps
+# Install Python dependencies - use constraints to BLOCK opencv-python at pip level
+# This prevents ultralytics from installing opencv-python (GUI version)
 RUN pip install --upgrade pip && \
     echo "📦 Step 1: Installing opencv-python-headless..." && \
     pip install --no-cache-dir opencv-python-headless>=4.8.0 && \
-    echo "📦 Step 2: Installing all requirements..." && \
-    pip install --no-cache-dir -r requirements.txt && \
-    echo "🔍 Step 3: Checking for GUI opencv..." && \
-    pip list | grep opencv && \
-    echo "🧹 Step 4: Removing any GUI opencv..." && \
-    pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null || true && \
-    echo "🔍 Step 5: Verifying with conditional reinstall..." && \
-    if pip list | grep -E "^opencv-python " | grep -v headless; then \
-        echo "❌ ERROR: opencv-python (GUI) still detected! Force removing..." && \
-        pip uninstall -y opencv-python opencv-contrib-python && \
-        pip install --force-reinstall --no-cache-dir opencv-python-headless>=4.8.0; \
-    fi && \
+    echo "📦 Step 2: Installing all requirements with constraints (blocks opencv-python)..." && \
+    PIP_CONSTRAINT=constraints.txt pip install --no-cache-dir -r requirements.txt && \
     echo "✅ Final OpenCV verification:" && \
     pip list | grep opencv && \
-    echo "✅ Build complete"
+    echo "✅ Build complete - opencv-python should NOT appear above"
 
 # Copy application code
 COPY backend/ /app/
