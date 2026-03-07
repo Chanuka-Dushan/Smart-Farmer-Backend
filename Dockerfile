@@ -19,16 +19,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt .
 COPY backend/constraints.txt .
 
-# Install Python dependencies - use constraints to BLOCK opencv-python at pip level
-# This prevents ultralytics from installing opencv-python (GUI version)
-# Use pip cache to speed up DigitalOcean rebuilds (cache persists between builds)
+# Install Python dependencies - FORCE opencv-python-headless only
+# Strategy: Install headless first, then install ultralytics without its opencv dependency
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip && \
-    echo "📦 Installing opencv-python-headless..." && \
+    echo "📦 Step 1: Install opencv-python-headless first..." && \
     pip install opencv-python-headless>=4.8.0 && \
-    echo "📦 Installing requirements with constraints..." && \
-    PIP_CONSTRAINT=constraints.txt pip install -r requirements.txt && \
-    echo "✅ OpenCV check:" && \
+    echo "📦 Step 2: Install ultralytics WITHOUT opencv (--no-deps then manually install deps)..." && \
+    pip install --no-deps ultralytics>=8.0.0 && \
+    pip install torch torchvision pillow pyyaml requests tqdm matplotlib seaborn pandas psutil py-cpuinfo && \
+    echo "📦 Step 3: Install remaining requirements..." && \
+    pip install -r requirements.txt && \
+    echo "📦 Step 4: FORCE remove any opencv-python (GUI)..." && \
+    pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null || true && \
+    pip install --force-reinstall --no-deps opencv-python-headless>=4.8.0 && \
+    echo "✅ Final check - should ONLY show opencv-python-headless:" && \
     pip list | grep opencv
 
 # Copy application code
