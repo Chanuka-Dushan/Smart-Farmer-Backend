@@ -124,6 +124,10 @@ Important:
         """
         Forward audio from mobile app to OpenAI
         """
+        # Add local state to track if we've sent any audio since last commit/session start
+        has_sent_audio_since_commit = False
+        bytes_sent_since_commit = 0
+        
         try:
             while True:
                 # Receive message from FastAPI WebSocket
@@ -146,6 +150,8 @@ Important:
                             "audio": audio_b64
                         }
                         await openai_ws.send(json.dumps(audio_event))
+                        has_sent_audio_since_commit = True
+                        bytes_sent_since_commit += len(audio_bytes)
                         
                     elif msg_type == "websocket.receive" and "text" in message:
                         # JSON message from mobile app
@@ -169,31 +175,45 @@ Important:
                                     pcm_data = audio_bytes[data_pos + 8:]
                                     audio_b64 = base64.b64encode(pcm_data).decode('utf-8')
                                     logger.info(f"✅ Stripped WAV header, PCM data: {len(pcm_data)} bytes")
+                                    audio_bytes = pcm_data # For length tracking
                                 else:
                                     # Fallback: assume standard 44-byte header
                                     pcm_data = audio_bytes[44:]
                                     audio_b64 = base64.b64encode(pcm_data).decode('utf-8')
                                     logger.warning(f"⚠️ WAV data chunk not found, using offset 44: {len(pcm_data)} bytes")
+                                    audio_bytes = pcm_data # For length tracking
                             
                             audio_event = {
                                 "type": "input_audio_buffer.append",
                                 "audio": audio_b64
                             }
                             await openai_ws.send(json.dumps(audio_event))
-                            logger.debug(f"📤 Sent audio to OpenAI")
+                            has_sent_audio_since_commit = True
+                            bytes_sent_since_commit += len(audio_bytes)
+                            logger.debug(f"📤 Sent audio to OpenAI ({len(audio_bytes)} bytes)")
                             
                         elif data.get("type") == "audio_commit":
                             # Mobile app finished sending audio, commit the buffer
-                            commit_event = {
-                                "type": "input_audio_buffer.commit"
-                            }
-                            await openai_ws.send(json.dumps(commit_event))
-                            
-                            # Trigger response
-                            response_event = {
-                                "type": "response.create"
-                            }
-                            await openai_ws.send(json.dumps(response_event))
+                            # OpenAI requires at least 100ms of audio (approx 4.8KB at 24kHz PCM16)
+                            # We check if we've sent anything to avoid 'buffer too small' error
+                            if has_sent_audio_since_commit and bytes_sent_since_commit > 100:
+                                commit_event = {
+                                    "type": "input_audio_buffer.commit"
+                                }
+                                await openai_ws.send(json.dumps(commit_event))
+                                
+                                # Trigger response
+                                response_event = {
+                                    "type": "response.create"
+                                }
+                                await openai_ws.send(json.dumps(response_event))
+                                
+                                # Reset counters for next turn
+                                has_sent_audio_since_commit = False
+                                bytes_sent_since_commit = 0
+                                logger.info("✅ Committed audio buffer and requested response")
+                            else:
+                                logger.warning(f"⚠️ Skipping audio_commit: buffer empty or too small ({bytes_sent_since_commit} bytes)")
                             
                         elif data.get("type") == "text":
                             # Text message (fallback)

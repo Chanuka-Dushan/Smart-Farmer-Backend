@@ -33,18 +33,18 @@ RUN mkdir -p /root/.config/pip && \
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip setuptools wheel && \
-    echo "📦 Step 1: Install opencv-python-headless FIRST (lock it)..." && \
-    pip install opencv-python-headless==4.10.0.84 && \
+    echo "📦 Step 1: Install opencv-python-headless and core ML deps FIRST..." && \
+    pip install opencv-python-headless==4.10.0.84 numpy>=1.24.0,<2.0.0 torch==2.1.0 torchvision==0.16.0 && \
     \
-    echo "📦 Step 2: Install ultralytics WITHOUT any deps..." && \
+    echo "📦 Step 2: Install ultralytics WITHOUT any deps (to prevent GUI opencv pull)..." && \
     pip install --no-deps ultralytics==8.2.103 && \
     \
     echo "📦 Step 3: Install ultralytics dependencies manually..." && \
     pip install "matplotlib>=3.7.0" "pillow>=10.0.0" pyyaml requests tqdm && \
     pip install pandas seaborn psutil py-cpuinfo thop scipy && \
     \
-    echo "📦 Step 4: Install OTHER requirements EXCEPT opencv and ultralytics..." && \
-    grep -v "^opencv-python" requirements.txt | grep -v "^ultralytics" | grep -v "^#" | grep -v "^$" > /tmp/filtered_requirements.txt && \
+    echo "📦 Step 4: Install OTHER requirements EXCEPT opencv, ultralytics, torch, and numpy..." && \
+    grep -v "^opencv-python" requirements.txt | grep -v "^ultralytics" | grep -v "^torch" | grep -v "^numpy" | grep -v "^#" | grep -v "^$" > /tmp/filtered_requirements.txt && \
     pip install -r /tmp/filtered_requirements.txt && \
     \
     echo "📦 Step 5: NUCLEAR CLEANUP - remove any opencv-python..." && \

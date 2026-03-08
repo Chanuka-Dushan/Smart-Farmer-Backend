@@ -28,7 +28,21 @@ try:
     logger.info("✓ Ultralytics YOLO available")
 except Exception as e:
     YOLO_AVAILABLE = False
-    logger.warning(f"⚠ Ultralytics YOLO not available: {e}")
+    logger.error(f"❌ Ultralytics YOLO import failed: {e}", exc_info=True)
+    # Check for common missing dependencies
+    try:
+        import torch
+        logger.info(f"  - PyTorch is available: {torch.__version__}")
+    except ImportError:
+        logger.error("  - PyTorch is MISSING")
+    
+    try:
+        import numpy
+        logger.info(f"  - NumPy is available: {numpy.__version__}")
+    except ImportError:
+        logger.error("  - NumPy is MISSING")
+    
+    logger.warning("⚠ Tyre damage detection will run in simulation mode due to YOLO unavailability")
 
 
 class TyreDamageDetector:
