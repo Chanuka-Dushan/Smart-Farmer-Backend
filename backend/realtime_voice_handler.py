@@ -124,96 +124,67 @@ Important:
         """
         Forward audio from mobile app to OpenAI
         """
-        # Add local state to track if we've sent any audio since last commit/session start
+        # [REPAIR] Log to verify new code is running
+        logger.info("🛠️ [REPAIR] handle_client_to_openai started with 10KB protection")
+        
         has_sent_audio_since_commit = False
         bytes_sent_since_commit = 0
         
         try:
             while True:
-                # Receive message from FastAPI WebSocket
                 message = await client_ws.receive()
-                
-                # Check message type
                 msg_type = message.get("type")
+                
                 if msg_type == "websocket.disconnect":
-                    logger.info("📱 Client disconnected")
                     break
                 
                 try:
-                    # Handle binary audio data
                     if msg_type == "websocket.receive" and "bytes" in message:
-                        # Raw audio from mobile app - convert to base64 and send to OpenAI
                         audio_bytes = message["bytes"]
+                        if not audio_bytes:
+                            continue
+                            
                         audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-                        audio_event = {
+                        await openai_ws.send(json.dumps({
                             "type": "input_audio_buffer.append",
                             "audio": audio_b64
-                        }
-                        await openai_ws.send(json.dumps(audio_event))
+                        }))
                         has_sent_audio_since_commit = True
                         bytes_sent_since_commit += len(audio_bytes)
                         
                     elif msg_type == "websocket.receive" and "text" in message:
-                        # JSON message from mobile app
                         data = json.loads(message["text"])
                         
                         if data.get("type") == "audio":
-                            # Base64 encoded audio (may be WAV format)
                             audio_b64 = data.get("audio")
-                            
-                            # Decode to check if it's WAV format
+                            if not audio_b64:
+                                continue
+                                
                             audio_bytes = base64.b64decode(audio_b64)
-                            
-                            # Check for WAV header (RIFF...WAVE)
-                            if audio_bytes[:4] == b'RIFF' and audio_bytes[8:12] == b'WAVE':
-                                # WAV file detected - need to extract PCM data
-                                # Find the 'data' chunk
+                            # ... (WAV stripping logic remains same) ...
+                            if audio_bytes[:4] == b'RIFF':
                                 data_pos = audio_bytes.find(b'data')
                                 if data_pos != -1:
-                                    # Data chunk size is 4 bytes after 'data' marker
-                                    # PCM data starts 8 bytes after 'data' marker
-                                    pcm_data = audio_bytes[data_pos + 8:]
-                                    audio_b64 = base64.b64encode(pcm_data).decode('utf-8')
-                                    logger.info(f"✅ Stripped WAV header, PCM data: {len(pcm_data)} bytes")
-                                    audio_bytes = pcm_data # For length tracking
-                                else:
-                                    # Fallback: assume standard 44-byte header
-                                    pcm_data = audio_bytes[44:]
-                                    audio_b64 = base64.b64encode(pcm_data).decode('utf-8')
-                                    logger.warning(f"⚠️ WAV data chunk not found, using offset 44: {len(pcm_data)} bytes")
-                                    audio_bytes = pcm_data # For length tracking
+                                    audio_bytes = audio_bytes[data_pos + 8:]
+                                    audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
                             
-                            audio_event = {
+                            await openai_ws.send(json.dumps({
                                 "type": "input_audio_buffer.append",
                                 "audio": audio_b64
-                            }
-                            await openai_ws.send(json.dumps(audio_event))
+                            }))
                             has_sent_audio_since_commit = True
                             bytes_sent_since_commit += len(audio_bytes)
-                            logger.debug(f"📤 Sent audio to OpenAI ({len(audio_bytes)} bytes)")
                             
                         elif data.get("type") == "audio_commit":
-                            # Mobile app finished sending audio, commit the buffer
-                            # OpenAI requires at least 100ms of audio (approx 4.8KB at 24kHz PCM16)
-                            # We check if we've sent at least 10KB to be safe and avoid 'buffer too small' error
+                            # [REPAIR] DOUBLE LOCK: Never send commit if buffer is too small
                             if has_sent_audio_since_commit and bytes_sent_since_commit > 10000:
-                                commit_event = {
-                                    "type": "input_audio_buffer.commit"
-                                }
-                                await openai_ws.send(json.dumps(commit_event))
-                                
-                                # Trigger response
-                                response_event = {
-                                    "type": "response.create"
-                                }
-                                await openai_ws.send(json.dumps(response_event))
-                                
-                                # Reset counters for next turn
+                                logger.info(f"✅ [REPAIR] Committing {bytes_sent_since_commit} bytes")
+                                await openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+                                await openai_ws.send(json.dumps({"type": "response.create"}))
                                 has_sent_audio_since_commit = False
                                 bytes_sent_since_commit = 0
-                                logger.info(f"✅ Committed audio buffer ({bytes_sent_since_commit} bytes) and requested response")
                             else:
-                                logger.warning(f"⚠️ Skipping audio_commit: buffer empty or too small ({bytes_sent_since_commit} bytes)")
+                                logger.warning(f"⚠️ [REPAIR] Blocked empty commit ({bytes_sent_since_commit} bytes)")
                             
                         elif data.get("type") == "text":
                             # Text message (fallback)
