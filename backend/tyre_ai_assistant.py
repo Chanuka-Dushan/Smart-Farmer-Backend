@@ -13,11 +13,12 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 try:
-    import openai
+    from openai import OpenAI
     OPENAI_AVAILABLE = True
-    logger.info("✓ OpenAI library available")
+    logger.info("✓ OpenAI library available (v1.0+)")
 except ImportError:
     OPENAI_AVAILABLE = False
+    OpenAI = None
     logger.warning("⚠ OpenAI library not available")
 
 
@@ -49,8 +50,8 @@ class TyreHealthAssistant:
         else:
             self.enabled = OPENAI_AVAILABLE
             if OPENAI_AVAILABLE:
-                openai.api_key = self.api_key
-                logger.info("✅ OpenAI API configured")
+                self.client = OpenAI(api_key=self.api_key)
+                logger.info("✅ OpenAI client configured (v1.0+)")
         
         # Conversation context storage (in production, use database)
         self.conversations = {}
@@ -263,7 +264,7 @@ class TyreHealthAssistant:
                     })
                 
                 # Get AI response
-                response = openai.ChatCompletion.create(
+                response = self.client.chat.completions.create(
                     model="gpt-4",
                     messages=messages,
                     temperature=0.7,

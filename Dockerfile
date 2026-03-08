@@ -25,25 +25,41 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt .
 COPY backend/constraints.txt .
 
-# Install Python dependencies - FAST BUILD with opencv-python blocking
-# Strategy: Use pip cache + install opencv-headless first + block GUI opencv
+# Install Python dependencies - ABSOLUTE BLOCK of opencv-python (GUI)
+# Create pip.conf to globally block opencv-python installations
+RUN mkdir -p /root/.config/pip && \
+    echo "[install]" > /root/.config/pip/pip.conf && \
+    echo "no-binary = opencv-python,opencv-contrib-python" >> /root/.config/pip/pip.conf
+
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip setuptools wheel && \
-    echo "📦 Installing opencv-python-headless FIRST..." && \
+    echo "📦 Step 1: Install opencv-python-headless FIRST (lock it)..." && \
     pip install opencv-python-headless==4.10.0.84 && \
-    echo "📦 Installing ultralytics WITHOUT dependencies..." && \
+    \
+    echo "📦 Step 2: Install ultralytics WITHOUT any deps..." && \
     pip install --no-deps ultralytics==8.2.103 && \
-    echo "📦 Installing ultralytics dependencies (cached)..." && \
-    pip install matplotlib==3.8.2 pillow==10.1.0 pyyaml requests tqdm pandas seaborn psutil py-cpuinfo thop scipy && \
-    echo "📦 Installing remaining requirements (cached)..." && \
-    pip install -r requirements.txt && \
-    echo "🔍 Checking for opencv-python (GUI)..." && \
+    \
+    echo "📦 Step 3: Install ultralytics dependencies manually..." && \
+    pip install matplotlib==3.8.2 pillow==10.1.0 pyyaml requests tqdm && \
+    pip install pandas seaborn psutil py-cpuinfo thop scipy && \
+    \
+    echo "📦 Step 4: Install OTHER requirements EXCEPT opencv and ultralytics..." && \
+    grep -v "^opencv-python" requirements.txt | grep -v "^ultralytics" | grep -v "^#" | grep -v "^$" > /tmp/filtered_requirements.txt && \
+    pip install -r /tmp/filtered_requirements.txt && \
+    \
+    echo "📦 Step 5: NUCLEAR CLEANUP - remove any opencv-python..." && \
     pip uninstall -y opencv-python opencv-contrib-python opencv-python-rolling 2>/dev/null || true && \
+    \
+    echo "📦 Step 6: Final reinstall of headless (safety)..." && \
     pip install --force-reinstall --no-deps opencv-python-headless==4.10.0.84 && \
-    if pip list | grep -E "^opencv-python " | grep -v headless; then \
-        echo "❌ FATAL: opencv-python (GUI) detected!"; exit 1; \
+    \
+    echo "📦 Step 7: VERIFICATION (will fail build if GUI opencv found)..." && \
+    pip list | grep opencv && \
+    if pip list | grep -E "^opencv-python " | grep -v "headless"; then \
+        echo "❌ FATAL: opencv-python GUI version detected!"; \
+        exit 1; \
     fi && \
-    echo "✅ Build complete - only opencv-python-headless:" && pip list | grep opencv
+    echo "✅ SUCCESS: Only opencv-python-headless is installed"
 
 # Copy application code
 COPY backend/ /app/
