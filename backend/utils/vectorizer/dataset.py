@@ -1,5 +1,3 @@
-# backend/utils/vectorizer/dataset.py
-
 from typing import List, Dict, Any, Tuple
 import sys
 import os
@@ -12,6 +10,7 @@ sys.path.append(
 from models.part import Part
 from utils.vectorizer.text_builder import build_part_text
 from utils.database import SessionLocal
+from utils.compatibility import get_model_group
 
 
 def _safe_number(value: Any) -> float:
@@ -25,6 +24,16 @@ def _safe_number(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _safe_text(value: Any) -> str:
+    """
+    Convert value safely to string.
+    If None -> empty string.
+    """
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def get_all_parts(db) -> List[Part]:
@@ -42,7 +51,14 @@ def build_dataset(db) -> Tuple[List[int], List[str], List[List[float]], List[Dic
         part_ids: [1, 2, 3, ...]
         texts: ["oil filter ...", "bearing ..."]
         numeric: [[price, diameter, lifespan], ...]
-        categories: [{"category": "...", "machine_model": "..."}, ...]
+        categories: [
+            {
+                "category": "...",
+                "machine_model": "...",
+                "compatibility_group": "..."
+            },
+            ...
+        ]
     """
     parts = get_all_parts(db)
 
@@ -55,7 +71,7 @@ def build_dataset(db) -> Tuple[List[int], List[str], List[List[float]], List[Dic
         # part id
         part_ids.append(part.id)
 
-        # text
+        # text features
         text = build_part_text(part)
         texts.append(text)
 
@@ -68,9 +84,11 @@ def build_dataset(db) -> Tuple[List[int], List[str], List[List[float]], List[Dic
         numeric.append(numeric_row)
 
         # categorical features
+        machine_model = _safe_text(getattr(part, "machine_model", ""))
         category_row = {
-            "category": str(getattr(part, "category", "") or ""),
-            "machine_model": str(getattr(part, "machine_model", "") or "")
+            "category": _safe_text(getattr(part, "category", "")),
+            "machine_model": machine_model,
+            "compatibility_group": get_model_group(machine_model),
         }
         categories.append(category_row)
 
@@ -87,7 +105,9 @@ if __name__ == "__main__":
         print("First 2 texts:", texts[:2])
         print("First 2 numeric rows:", numeric[:2])
         print("First 2 categories:", categories[:2])
+
     except Exception as e:
         print("Error while building dataset:", e)
+
     finally:
         db.close()

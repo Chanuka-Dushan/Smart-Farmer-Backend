@@ -1,5 +1,3 @@
-# backend/utils/vectorizer/similarity.py
-
 import os
 import sys
 import numpy as np
@@ -13,6 +11,7 @@ sys.path.append(
 from utils.database import SessionLocal
 from models.part import Part
 from models.research import PartVector
+from utils.compatibility import get_model_group
 
 
 def get_part_vector_map(db):
@@ -59,6 +58,7 @@ def find_similar_parts(db, query_part_id: int, top_k: int = 5):
                 "name": part.name,
                 "category": part.category,
                 "machine_model": part.machine_model,
+                "compatibility_group": get_model_group(part.machine_model),
                 "score": float(score)
             })
 
@@ -70,18 +70,23 @@ def find_similar_parts(db, query_part_id: int, top_k: int = 5):
 if __name__ == "__main__":
     db = SessionLocal()
     try:
-        query_part_id = 1  # change this if needed
+        # Automatically pick one MF 240 part
+        query_part = db.query(Part).filter(
+            Part.machine_model.ilike("%mf 240%")
+        ).first()
 
-        query_part = db.query(Part).filter(Part.id == query_part_id).first()
         if not query_part:
-            print(f"Part with ID {query_part_id} not found.")
+            print("No MF 240 part found in database.")
         else:
+            query_part_id = query_part.id
+
             print("=" * 60)
-            print("QUERY PART")
+            print("QUERY PART (MF 240)")
             print(f"ID: {query_part.id}")
             print(f"Name: {query_part.name}")
             print(f"Category: {query_part.category}")
             print(f"Machine Model: {query_part.machine_model}")
+            print(f"Compatibility Group: {get_model_group(query_part.machine_model)}")
             print("=" * 60)
 
             similar_parts = find_similar_parts(db, query_part_id=query_part_id, top_k=5)
@@ -93,6 +98,7 @@ if __name__ == "__main__":
                     f"Name={item['name']} | "
                     f"Category={item['category']} | "
                     f"Model={item['machine_model']} | "
+                    f"Group={item['compatibility_group']} | "
                     f"Score={item['score']:.4f}"
                 )
 

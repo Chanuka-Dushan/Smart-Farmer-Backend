@@ -1,11 +1,9 @@
-# backend/utils/vectorizer/vector_builder.py
-
 import os
 import sys
 import joblib
 import pandas as pd
 
-from scipy.sparse import hstack
+from scipy.sparse import hstack, csr_matrix
 
 # Add backend folder to Python path
 sys.path.append(
@@ -13,6 +11,7 @@ sys.path.append(
 )
 
 from utils.vectorizer.text_builder import build_part_text
+from utils.compatibility import get_model_group
 
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -40,6 +39,15 @@ def _safe_number(value):
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _safe_text(value):
+    """
+    Convert value safely to lowercase string.
+    """
+    if value is None:
+        return ""
+    return str(value).strip().lower()
 
 
 def load_artifacts():
@@ -77,12 +85,15 @@ def build_vector(part):
         _safe_number(getattr(part, "diameter", 0)),
         _safe_number(getattr(part, "lifespan", 0)),
     ]]
-    num_vec = scaler.transform(numeric)
+    num_vec_dense = scaler.transform(numeric)
+    num_vec = csr_matrix(num_vec_dense)
 
     # 3) categorical
+    machine_model = _safe_text(getattr(part, "machine_model", ""))
     category_df = pd.DataFrame([{
-        "category": str(getattr(part, "category", "") or ""),
-        "machine_model": str(getattr(part, "machine_model", "") or "")
+        "category": _safe_text(getattr(part, "category", "")),
+        "machine_model": machine_model,
+        "compatibility_group": get_model_group(machine_model),
     }])
     cat_vec = onehot.transform(category_df)
 
@@ -91,6 +102,7 @@ def build_vector(part):
 
     # Return as normal Python list
     return final_vec.toarray()[0].tolist()
+
 
 if __name__ == "__main__":
     from utils.database import SessionLocal
@@ -106,9 +118,13 @@ if __name__ == "__main__":
             vector = build_vector(part)
             print("Part ID:", part.id)
             print("Part Name:", part.name)
+            print("Machine Model:", getattr(part, "machine_model", None))
+            print("Compatibility Group:", get_model_group(getattr(part, "machine_model", "")))
             print("Vector length:", len(vector))
             print("First 10 values:", vector[:10])
+
     except Exception as e:
         print("Error while building vector:", e)
+
     finally:
         db.close()

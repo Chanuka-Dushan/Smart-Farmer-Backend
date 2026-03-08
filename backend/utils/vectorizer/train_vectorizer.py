@@ -1,11 +1,9 @@
-# backend/utils/vectorizer/train_vectorizer.py
-
 import os
 import sys
 import joblib
 import pandas as pd
 
-from scipy.sparse import hstack
+from scipy.sparse import hstack, csr_matrix
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 
@@ -47,6 +45,9 @@ def train_vector_pipeline():
         # categories -> DataFrame
         categories_df = pd.DataFrame(categories)
 
+        print("\nCATEGORICAL COLUMNS USED:")
+        print(list(categories_df.columns))
+
         # 1) TF-IDF
         tfidf = TfidfVectorizer(
             max_features=3000,
@@ -60,7 +61,8 @@ def train_vector_pipeline():
 
         # 2) Numeric scaler
         scaler = StandardScaler()
-        num_vec = scaler.fit_transform(numeric)
+        num_vec_dense = scaler.fit_transform(numeric)
+        num_vec = csr_matrix(num_vec_dense)
 
         print("\nNumeric scaler trained successfully")
         print("Numeric vector shape:", num_vec.shape)
@@ -75,6 +77,10 @@ def train_vector_pipeline():
 
         print("\nOneHot encoder trained successfully")
         print("Category vector shape:", cat_vec.shape)
+
+        # Optional debug info
+        print("\nSAMPLE CATEGORY ROWS:")
+        print(categories_df.head(3))
 
         # 4) Combine all vectors
         final_matrix = hstack([text_vec, cat_vec, num_vec])
@@ -102,6 +108,7 @@ def train_vector_pipeline():
             "numeric_shape": num_vec.shape,
             "category_shape": cat_vec.shape,
             "final_shape": final_matrix.shape,
+            "category_columns": list(categories_df.columns),
         }
 
     finally:

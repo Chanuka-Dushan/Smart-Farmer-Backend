@@ -11,8 +11,11 @@ class Part(Base):
     name = Column(String(255), nullable=False)
     brand = Column(String(255), nullable=False)
 
-    # Machine compatibility (VERY IMPORTANT for recommender)
+    # Machine compatibility
     machine_model = Column(String(255), nullable=False, index=True)
+
+    # Cross-brand compatibility family
+    compatibility_group = Column(String(255), nullable=True, index=True)
 
     # Description for NLP similarity
     description = Column(Text, nullable=True)
@@ -28,7 +31,7 @@ class Part(Base):
     price = Column(Float, nullable=False)
     lifespan = Column(Integer, nullable=True)
 
-    # Structured specs (Works on SQLite + PostgreSQL)
+    # Structured specs
     specs_json = Column(JSON, nullable=True)
 
     # Optional image

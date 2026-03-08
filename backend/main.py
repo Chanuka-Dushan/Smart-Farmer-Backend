@@ -46,7 +46,11 @@ from config import (
     DISABLE_PART_IDENTIFICATION,
 )
 
-from routes.recommendation import router as recommendation_router
+#from routes.recommendation import router as recommendation_router
+from routes.vector_admin import router as vector_admin_router
+from routes.recommender import router as recommender_router
+from routes.search import router as search_router
+from routes.comparison import router as comparison_router
 
 from routes import blockchain_routes
 
@@ -315,7 +319,8 @@ class SavedPaymentMethod(Base):
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
 # Create the tables automatically
-from models.research import CompatibilityLabel, FeedbackEvent, PartVector, SalesTransaction, InventoryStock
+from models.research import CompatibilityLabel, FeedbackEvent, SalesTransaction, InventoryStock
+from models.part_vector import PartVector
 Base.metadata.create_all(bind=engine)
 
 # --- 3. Pydantic Models (Input Validation) ---
@@ -831,9 +836,14 @@ app.add_middleware(
 
 app.include_router(blockchain_routes.router)
 
-from routes.recommendation import router as recommendation_router
+#from routes.recommendation import router as recommendation_router
 
-app.include_router(recommendation_router)
+#app.include_router(recommendation_router)
+
+app.include_router(vector_admin_router)
+app.include_router(recommender_router)
+app.include_router(search_router)
+app.include_router(comparison_router)
 
 # --- AI Knowledge Integration ---
 try:
@@ -4471,5 +4481,5 @@ if __name__ == "__main__":
 
 # ============= RECOMMENDATION ROUTES (MUST BE LAST) =============
 
-from routes.recommendation import router as recommendation_router
-app.include_router(recommendation_router)
+#from routes.recommendation import router as recommendation_router
+#app.include_router(recommendation_router)

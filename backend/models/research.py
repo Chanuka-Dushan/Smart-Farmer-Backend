@@ -1,6 +1,6 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, JSON
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
 from sqlalchemy.sql import func
-from db_base import Base  # same Base you use in main.py
+from db_base import Base
 
 
 class CompatibilityLabel(Base):
@@ -28,17 +28,6 @@ class FeedbackEvent(Base):
 
     feedback = Column(String, nullable=False)  # "accept" or "reject"
     timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-
-class PartVector(Base):
-    __tablename__ = "part_vectors"
-
-    part_id = Column(Integer, ForeignKey("parts.id"), primary_key=True)
-
-    vector = Column(JSON, nullable=False)  # store list like [0.12, 0.98, ...]
-    vector_version = Column(String, nullable=False, default="v1")
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class SalesTransaction(Base):
