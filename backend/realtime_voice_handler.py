@@ -102,19 +102,14 @@ Important:
                 "input_audio_transcription": {
                     "model": "whisper-1"
                 },
-                "turn_detection": {
-                    "type": "server_vad",  # Voice Activity Detection
-                    "threshold": 0.5,
-                    "prefix_padding_ms": 300,
-                    "silence_duration_ms": 500
-                },
+                "turn_detection": None, # Disable VAD to prevent auto-commit errors
                 "temperature": 0.8,
                 "max_response_output_tokens": 4096
             }
         }
         
         await openai_ws.send(json.dumps(session_config))
-        logger.info("✅ Configured OpenAI Realtime session")
+        logger.info("✅ [VERSION-SYNC-MAR08-V1] Configured OpenAI session (VAD DISABLED)")
     
     async def handle_client_to_openai(
         self,
@@ -124,8 +119,8 @@ Important:
         """
         Forward audio from mobile app to OpenAI
         """
-        # [REPAIR] Log to verify new code is running
-        logger.info("🛠️ [REPAIR] handle_client_to_openai started with 10KB protection")
+        # [VERSION-SYNC-MAR08-V1]
+        logger.info("🚀 [VERSION-SYNC-MAR08-V1] Starting audio handler")
         
         has_sent_audio_since_commit = False
         bytes_sent_since_commit = 0
@@ -159,32 +154,24 @@ Important:
                             audio_b64 = data.get("audio")
                             if not audio_b64:
                                 continue
-                                
-                            audio_bytes = base64.b64decode(audio_b64)
-                            # ... (WAV stripping logic remains same) ...
-                            if audio_bytes[:4] == b'RIFF':
-                                data_pos = audio_bytes.find(b'data')
-                                if data_pos != -1:
-                                    audio_bytes = audio_bytes[data_pos + 8:]
-                                    audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
                             
                             await openai_ws.send(json.dumps({
                                 "type": "input_audio_buffer.append",
                                 "audio": audio_b64
                             }))
                             has_sent_audio_since_commit = True
-                            bytes_sent_since_commit += len(audio_bytes)
+                            bytes_sent_since_commit += len(base64.b64decode(audio_b64))
                             
                         elif data.get("type") == "audio_commit":
-                            # [REPAIR] DOUBLE LOCK: Never send commit if buffer is too small
-                            if has_sent_audio_since_commit and bytes_sent_since_commit > 10000:
-                                logger.info(f"✅ [REPAIR] Committing {bytes_sent_since_commit} bytes")
+                            # STRICT BLOCK: Never send commit if buffer is too small
+                            if has_sent_audio_since_commit and bytes_sent_since_commit > 5000:
+                                logger.info(f"📤 [VERSION-SYNC-MAR08-V1] Committing {bytes_sent_since_commit} bytes")
                                 await openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
                                 await openai_ws.send(json.dumps({"type": "response.create"}))
                                 has_sent_audio_since_commit = False
                                 bytes_sent_since_commit = 0
                             else:
-                                logger.warning(f"⚠️ [REPAIR] Blocked empty commit ({bytes_sent_since_commit} bytes)")
+                                logger.warning(f"🛑 [VERSION-SYNC-MAR08-V1] Blocked commit for tiny buffer: {bytes_sent_since_commit} bytes")
                             
                         elif data.get("type") == "text":
                             # Text message (fallback)

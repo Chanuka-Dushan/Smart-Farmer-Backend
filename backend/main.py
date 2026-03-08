@@ -49,6 +49,12 @@ from routes import blockchain_routes
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# [BANNER] Verify this appears in Digital Ocean logs!
+print("\n" + "="*80)
+print("🚀 SMART FARMER BACKEND [FORCE-SYNC-V3-MAR08]")
+print("🛠️  STATUS: REBUILD TRIGGERED")
+print("="*80 + "\n")
+
 # Tyre Health System imports (import after logger is configured)
 TYRE_SYSTEM_AVAILABLE = False
 get_tyre_detector = None
