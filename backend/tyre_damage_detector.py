@@ -5,9 +5,10 @@ Detects various types of tyre damage including treadwear, cracks, bulging, etc.
 
 import logging
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional, Tuple
 import numpy as np
 from datetime import datetime
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -146,9 +147,10 @@ class TyreDamageDetector:
                         highest_severity_damage = detection
 
             annotated_path = None
+            annotated_base64 = None
 
             if save_annotated and len(results) > 0 and CV2_AVAILABLE:
-                annotated_path = self._save_annotated_image(results[0], image_path)
+                annotated_path, annotated_base64 = self._save_annotated_image(results[0], image_path)
 
             response = {
                 "success": True,
@@ -157,6 +159,7 @@ class TyreDamageDetector:
                 "detections": detections,
                 "primary_damage": highest_severity_damage,
                 "annotated_image_path": annotated_path,
+                "annotated_image_base64": annotated_base64,
                 "model": "YOLOv8",
                 "timestamp": datetime.utcnow().isoformat()
             }
@@ -175,11 +178,16 @@ class TyreDamageDetector:
                 "timestamp": datetime.utcnow().isoformat()
             }
 
-    def _save_annotated_image(self, result, original_path: str):
-
+    def _save_annotated_image(self, result, original_path: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Save annotated image and return both file path and base64 encoding
+        
+        Returns:
+            Tuple of (file_path, base64_string) or (None, None) if fails
+        """
         if not CV2_AVAILABLE:
             logger.warning("⚠ Cannot save annotated image because OpenCV is not available")
-            return None
+            return None, None
 
         try:
 
@@ -191,19 +199,25 @@ class TyreDamageDetector:
 
             save_path = annotated_dir / filename
 
+            # Generate annotated image
             annotated_img = result.plot()
 
+            # Save to filesystem
             cv2.imwrite(str(save_path), annotated_img)
 
-            logger.info(f"💾 Annotated image saved: {save_path}")
+            # Encode to base64 for mobile app
+            _, buffer = cv2.imencode('.jpg', annotated_img)
+            image_base64 = base64.b64encode(buffer).decode('utf-8')
 
-            return str(save_path)
+            logger.info(f"💾 Annotated image saved: {save_path} (base64 encoded for mobile)")
+
+            return str(save_path), image_base64
 
         except Exception as e:
 
             logger.error(f"❌ Failed to save annotated image: {e}")
 
-            return None
+            return None, None
 
     def _simulate_detection(self, image_path: str) -> Dict:
 
