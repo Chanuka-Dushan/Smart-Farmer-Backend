@@ -247,19 +247,31 @@ Important:
                         language_name = "Sinhala" if language == "si" else "English"
                         damage_details = f"{damage_info['damage_type'].replace('_', ' ')} with {damage_info['severity']} severity ({damage_info['confidence']*100:.0f}% confidence)"
                         
-                        greeting_instruction = (
+                        greeting_text = (
                             f"Greet the user warmly and tell them you detected {damage_details}. "
-                            f"Ask if they'd like to know more. Keep it brief and conversational (2-3 sentences). "
-                            f"Respond in {language_name}."
+                            f"Ask if they'd like to know more about the damage and maintenance recommendations. "
+                            f"Keep it brief and conversational (2-3 sentences). Respond in {language_name}."
                         )
                         
-                        # Trigger AI response with instructions
-                        response_event = {
-                            "type": "response.create",
-                            "response": {
-                                "modalities": ["text", "audio"],
-                                "instructions": greeting_instruction
+                        # Add the greeting message to the conversation
+                        greeting_item = {
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": greeting_text
+                                    }
+                                ]
                             }
+                        }
+                        await openai_ws.send(json.dumps(greeting_item))
+                        
+                        # Trigger AI response
+                        response_event = {
+                            "type": "response.create"
                         }
                         await openai_ws.send(json.dumps(response_event))
                         logger.info("🎤 Triggered initial AI greeting")
