@@ -64,6 +64,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Copy application code
 COPY backend/ /app/
 
+# Run OpenCV cleanup script as final safety check
+COPY backend/fix_opencv.sh /tmp/fix_opencv.sh
+RUN chmod +x /tmp/fix_opencv.sh && \
+    /tmp/fix_opencv.sh && \
+    rm /tmp/fix_opencv.sh
+
 # Copy and make entrypoint script executable
 COPY backend/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
