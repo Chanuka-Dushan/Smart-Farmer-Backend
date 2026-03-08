@@ -195,8 +195,8 @@ Important:
                         elif data.get("type") == "audio_commit":
                             # Mobile app finished sending audio, commit the buffer
                             # OpenAI requires at least 100ms of audio (approx 4.8KB at 24kHz PCM16)
-                            # We check if we've sent anything to avoid 'buffer too small' error
-                            if has_sent_audio_since_commit and bytes_sent_since_commit > 100:
+                            # We check if we've sent at least 10KB to be safe and avoid 'buffer too small' error
+                            if has_sent_audio_since_commit and bytes_sent_since_commit > 10000:
                                 commit_event = {
                                     "type": "input_audio_buffer.commit"
                                 }
@@ -211,7 +211,7 @@ Important:
                                 # Reset counters for next turn
                                 has_sent_audio_since_commit = False
                                 bytes_sent_since_commit = 0
-                                logger.info("✅ Committed audio buffer and requested response")
+                                logger.info(f"✅ Committed audio buffer ({bytes_sent_since_commit} bytes) and requested response")
                             else:
                                 logger.warning(f"⚠️ Skipping audio_commit: buffer empty or too small ({bytes_sent_since_commit} bytes)")
                             
@@ -256,6 +256,55 @@ Important:
         """
         Forward responses from OpenAI to mobile app
         """
+        first_greeting_sent = False
+        
+        async def trigger_greeting():
+            nonlocal first_greeting_sent
+            if first_greeting_sent:
+                return
+            
+            first_greeting_sent = True
+            logger.info(f"🎤 Triggering initial AI greeting for session {session_id}")
+            
+            # Trigger initial greeting after session is ready
+            language_name = "Sinhala" if language == "si" else "English"
+            # Format damage type for better speech
+            damage_type_clean = damage_info['damage_type'].replace('_', ' ').replace('1', '').replace('2', '').strip()
+            damage_details = f"{damage_type_clean} with {damage_info['severity']} severity"
+            
+            greeting_text = (
+                f"Greet the user warmly in {language_name}. "
+                f"Tell them you have analyzed the tyre and detected {damage_details}. "
+                f"Ask them how many hours per week they typically use the tractor so you can estimate the remaining life. "
+                f"Keep it very brief and conversational (max 2 sentences). Respond ONLY in {language_name}."
+            )
+            
+            # Add the greeting message to the conversation
+            greeting_item = {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": greeting_text
+                        }
+                    ]
+                }
+            }
+            await openai_ws.send(json.dumps(greeting_item))
+            
+            # Trigger AI response with audio modality
+            response_event = {
+                "type": "response.create",
+                "response": {
+                    "modalities": ["text", "audio"]
+                }
+            }
+            await openai_ws.send(json.dumps(response_event))
+            logger.info("✅ Sent greeting request to OpenAI")
+
         try:
             async for message in openai_ws:
                 try:
@@ -273,42 +322,13 @@ Important:
                             "type": "session.ready",
                             "session_id": session_id
                         })
+                        # Try to trigger greeting immediately
+                        await trigger_greeting()
                         
-                        # Trigger initial greeting after session is ready
-                        language_name = "Sinhala" if language == "si" else "English"
-                        damage_details = f"{damage_info['damage_type'].replace('_', ' ')} with {damage_info['severity']} severity ({damage_info['confidence']*100:.0f}% confidence)"
-                        
-                        greeting_text = (
-                            f"Greet the user warmly and tell them you detected {damage_details}. "
-                            f"Ask if they'd like to know more about the damage and maintenance recommendations. "
-                            f"Keep it brief and conversational (2-3 sentences). Respond in {language_name}."
-                        )
-                        
-                        # Add the greeting message to the conversation
-                        greeting_item = {
-                            "type": "conversation.item.create",
-                            "item": {
-                                "type": "message",
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "input_text",
-                                        "text": greeting_text
-                                    }
-                                ]
-                            }
-                        }
-                        await openai_ws.send(json.dumps(greeting_item))
-                        
-                        # Trigger AI response with audio modality
-                        response_event = {
-                            "type": "response.create",
-                            "response": {
-                                "modalities": ["text", "audio"]
-                            }
-                        }
-                        await openai_ws.send(json.dumps(response_event))
-                        logger.info("🎤 Triggered initial AI greeting with audio")
+                    elif event_type == "session.updated":
+                        logger.info("✅ OpenAI session updated")
+                        # Also try to trigger greeting on update to be safe
+                        await trigger_greeting()
                         
                     elif event_type == "response.audio.delta":
                         # Streaming audio from OpenAI
