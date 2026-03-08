@@ -160,16 +160,27 @@ Important:
                             
                             # Check for WAV header (RIFF...WAVE)
                             if audio_bytes[:4] == b'RIFF' and audio_bytes[8:12] == b'WAVE':
-                                # Strip WAV header (first 44 bytes) to get PCM16 data
-                                pcm_data = audio_bytes[44:]
-                                audio_b64 = base64.b64encode(pcm_data).decode('utf-8')
-                                logger.info(f"Stripped WAV header, PCM data size: {len(pcm_data)} bytes")
+                                # WAV file detected - need to extract PCM data
+                                # Find the 'data' chunk
+                                data_pos = audio_bytes.find(b'data')
+                                if data_pos != -1:
+                                    # Data chunk size is 4 bytes after 'data' marker
+                                    # PCM data starts 8 bytes after 'data' marker
+                                    pcm_data = audio_bytes[data_pos + 8:]
+                                    audio_b64 = base64.b64encode(pcm_data).decode('utf-8')
+                                    logger.info(f"✅ Stripped WAV header, PCM data: {len(pcm_data)} bytes")
+                                else:
+                                    # Fallback: assume standard 44-byte header
+                                    pcm_data = audio_bytes[44:]
+                                    audio_b64 = base64.b64encode(pcm_data).decode('utf-8')
+                                    logger.warning(f"⚠️ WAV data chunk not found, using offset 44: {len(pcm_data)} bytes")
                             
                             audio_event = {
                                 "type": "input_audio_buffer.append",
                                 "audio": audio_b64
                             }
                             await openai_ws.send(json.dumps(audio_event))
+                            logger.debug(f"📤 Sent audio to OpenAI")
                             
                         elif data.get("type") == "audio_commit":
                             # Mobile app finished sending audio, commit the buffer
@@ -269,12 +280,15 @@ Important:
                         }
                         await openai_ws.send(json.dumps(greeting_item))
                         
-                        # Trigger AI response
+                        # Trigger AI response with audio modality
                         response_event = {
-                            "type": "response.create"
+                            "type": "response.create",
+                            "response": {
+                                "modalities": ["text", "audio"]
+                            }
                         }
                         await openai_ws.send(json.dumps(response_event))
-                        logger.info("🎤 Triggered initial AI greeting")
+                        logger.info("🎤 Triggered initial AI greeting with audio")
                         
                     elif event_type == "response.audio.delta":
                         # Streaming audio from OpenAI
@@ -310,6 +324,13 @@ Important:
                                 "text": transcript,
                                 "role": "user"
                             })
+                            
+                    elif event_type == "conversation.item.input_audio_transcription.failed":
+                        # Transcription failed
+                        error_details = event.get("error", {})
+                        error_msg = error_details.get("message", "Transcription failed")
+                        logger.error(f"❌ Transcription failed: {error_msg}")
+                        logger.debug(f"Full error: {error_details}")
                             
                     elif event_type == "response.done":
                         # Complete response finished
