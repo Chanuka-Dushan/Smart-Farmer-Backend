@@ -1402,9 +1402,24 @@ async def detect_tyre_damage(
         Detection results with damage type, confidence, severity, and bounding boxes
     """
     if not TYRE_SYSTEM_AVAILABLE:
+        # Provide detailed diagnostic information
+        try:
+            import cv2
+            opencv_version = cv2.__version__
+            opencv_status = "✅ OpenCV available"
+        except ImportError as e:
+            opencv_version = "N/A"
+            opencv_status = f"❌ OpenCV failed: {str(e)}"
+        
         raise HTTPException(
             status_code=503,
-            detail="Tyre detection system not available. Please check /health endpoint for diagnostics. Ensure ultralytics, openai, and opencv-python-headless are installed."
+            detail={
+                "error": "Tyre detection system not available",
+                "opencv_status": opencv_status,
+                "opencv_version": opencv_version,
+                "solution": "Backend deployment in progress or OpenCV issue. Check /health endpoint.",
+                "timestamp": datetime.now().isoformat()
+            }
         )
     
     try:
