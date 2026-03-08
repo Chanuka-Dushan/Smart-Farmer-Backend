@@ -2,6 +2,7 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
+websockets>=13.0,<15.0  # WebSocket support for OpenAI Realtime API
 
 # Pydantic (Data Validation)
 pydantic==2.5.0
@@ -26,9 +27,9 @@ gunicorn==21.2.0
 
 # Additional dependencies
 email-validator==2.1.0
-# PyTorch for part identification model
-torch==2.10.0
-torchvision==0.25.0
+# PyTorch for part identification model (CPU-only)
+torch==2.1.0
+torchvision==0.16.0
 
 # Note: TensorFlow removed to reduce build time and image size
 # Vision analysis now uses Ultralytics YOLOv8 (tyre damage detection)

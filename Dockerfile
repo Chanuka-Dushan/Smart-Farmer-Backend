@@ -40,7 +40,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-deps ultralytics==8.2.103 && \
     \
     echo "📦 Step 3: Install ultralytics dependencies manually..." && \
-    pip install matplotlib==3.8.2 pillow==10.1.0 pyyaml requests tqdm && \
+    pip install "matplotlib>=3.7.0" "pillow>=10.0.0" pyyaml requests tqdm && \
     pip install pandas seaborn psutil py-cpuinfo thop scipy && \
     \
     echo "📦 Step 4: Install OTHER requirements EXCEPT opencv and ultralytics..." && \
