@@ -116,7 +116,16 @@ Important:
         await openai_ws.send(json.dumps(session_config))
         logger.info("✅ Configured OpenAI Realtime session")
         
-        # Send initial greeting
+        # Send initial greeting - AI speaks first
+        language_name = "Sinhala" if language == "si" else "English"
+        damage_details = f"{damage_info['damage_type'].replace('_', ' ')} with {damage_info['severity']} severity ({damage_info['confidence']*100:.0f}% confidence)"
+        
+        greeting_prompt = (
+            f"Immediately greet the user warmly and briefly mention you detected {damage_details}. "
+            f"Ask if they'd like to know more about the damage and maintenance recommendations. "
+            f"Keep it natural and conversational, around 2-3 sentences. Respond in {language_name} language."
+        )
+        
         initial_message = {
             "type": "conversation.item.create",
             "item": {
@@ -125,7 +134,7 @@ Important:
                 "content": [
                     {
                         "type": "input_text",
-                        "text": "Start the conversation by greeting me and briefly mentioning the detected damage."
+                        "text": greeting_prompt
                     }
                 ]
             }
@@ -133,11 +142,12 @@ Important:
         
         await openai_ws.send(json.dumps(initial_message))
         
-        # Trigger response
+        # Trigger immediate response
         response_create = {
             "type": "response.create"
         }
         await openai_ws.send(json.dumps(response_create))
+        logger.info("🎤 Triggered initial AI greeting")
     
     async def handle_client_to_openai(
         self,
