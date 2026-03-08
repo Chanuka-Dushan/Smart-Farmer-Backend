@@ -2,34 +2,31 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
-websockets>=13.0,<15.0  # WebSocket support for OpenAI Realtime API
+websockets>=13.0,<15.0
 
-# Pydantic (Data Validation)
+# Pydantic
 pydantic==2.5.0
 pydantic-settings==2.1.0
 
-# Database (SQLAlchemy for ORM)
+# Database
 sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
 
-# Auth & Security
+# Auth
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 python-dotenv==1.0.0
-opencv-python==0.0.0
-opencv-python-headless>=4.8.0
+
+# OpenCV - FORCE HEADLESS ONLY
+opencv-python-headless==4.10.0.84
 
 # Utilities
 aiofiles==23.2.1
-
-# Production server
 gunicorn==21.2.0
-
-# Additional dependencies
 email-validator==2.1.0
-# PyTorch for part identification model (CPU-only)
+
+# ML
 torch==2.1.0
 torchvision==0.16.0
-
-# Note: TensorFlow removed to reduce build time and image size
-# Vision analysis now uses Ultralytics YOLOv8 (tyre damage detection)
+ultralytics==8.2.103
+openai>=1.0.0
