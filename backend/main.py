@@ -3,9 +3,10 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from pydantic import BaseModel
@@ -53,6 +54,7 @@ TYRE_SYSTEM_AVAILABLE = False
 get_tyre_detector = None
 get_tyre_assistant = None
 get_tyre_predictor = None
+get_voice_handler = None  # Realtime voice handler
 
 # CRITICAL: Fix OpenCV before importing tyre modules
 # Check OpenCV installation at startup
@@ -110,11 +112,12 @@ try:
     from tyre_damage_detector import get_detector as get_tyre_detector
     from tyre_ai_assistant import get_assistant as get_tyre_assistant
     from tyre_life_predictor import get_predictor as get_tyre_predictor
+    from realtime_voice_handler import get_voice_handler
     TYRE_SYSTEM_AVAILABLE = True
     logger.info("✓ Tyre Health System available")
 except ImportError as e:
     logger.error(f"❌ Tyre Health System import failed: {e}")
-    logger.error("Please install: pip install ultralytics>=8.0.0 openai>=1.0.0 opencv-python-headless>=4.8.0")
+    logger.error("Please install: pip install ultralytics>=8.0.0 openai>=1.0.0 opencv-python-headless>=4.8.0 websockets>=12.0")
 except Exception as e:
     logger.error(f"❌ Tyre Health System initialization error: {e}", exc_info=True)
 
@@ -1328,7 +1331,6 @@ async def predict_lifecycle(
                 "color_code": color_code
             },
             "metadata": {
-                "model_version": MODEL_VERSION,
                 "prediction_time": datetime.now(timezone.utc).isoformat(),
                 "processing_time_ms": int((datetime.now(timezone.utc) - prediction_start_time).total_seconds() * 1000)
             }
@@ -1636,6 +1638,203 @@ async def get_chat_summary(session_id: str):
             detail=f"Failed to get summary: {str(e)}"
         )
 
+
+@app.post("/api/tyre/voice-chat/synthesize")
+async def synthesize_speech(text: str = Form(...), language: str = Form("si")):
+    """
+    Convert text to speech (TTS)
+    
+    Args:
+        text: Text to convert to speech
+        language: Language code (si for Sinhala, en for English)
+    
+    Returns:
+        MP3 audio file
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Tyre AI assistant not available"
+        )
+    
+    try:
+        logger.info(f"🔊 Text-to-speech request: {text[:50]}... (lang: {language})")
+        
+        # Get assistant and synthesize
+        assistant = get_tyre_assistant()
+        audio_bytes = assistant.text_to_speech(text, language)
+        
+        if not audio_bytes:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate speech"
+            )
+        
+        logger.info(f"✅ Speech generated: {len(audio_bytes)} bytes")
+        
+        # Return audio file
+        return Response(
+            content=audio_bytes,
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": "attachment; filename=speech.mp3"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ TTS error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Speech synthesis failed: {str(e)}"
+        )
+
+
+@app.post("/api/tyre/voice-chat/transcribe")
+async def transcribe_speech(audio: UploadFile = File(...)):
+    """
+    Convert speech to text (STT)
+    
+    Args:
+        audio: Audio file (MP3, WAV, M4A, etc.)
+    
+    Returns:
+        Transcribed text
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Tyre AI assistant not available"
+        )
+    
+    try:
+        logger.info(f"🎤 Speech-to-text request: {audio.filename} ({audio.content_type})")
+        
+        # Read audio file
+        audio_bytes = await audio.read()
+        
+        # Get assistant and transcribe
+        assistant = get_tyre_assistant()
+        
+        # Create a file-like object for OpenAI API
+        audio_file = BytesIO(audio_bytes)
+        audio_file.name = audio.filename or "audio.mp3"
+        
+        text = assistant.speech_to_text(audio_file)
+        
+        if not text:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not transcribe audio"
+            )
+        
+        logger.info(f"✅ Transcription: {text}")
+        
+        return {"text": text}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ STT error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Speech transcription failed: {str(e)}"
+        )
+
+
+@app.websocket("/ws/tyre/voice-chat")
+async def voice_chat_websocket(
+    websocket: WebSocket,
+    damage_type: str,
+    confidence: float,
+    severity: str,
+    lifespan_reduction: float,
+    language: str = "si"
+):
+    """
+    WebSocket endpoint for OpenAI Realtime API voice streaming
+    
+    Query Parameters:
+        - damage_type: Type of damage detected (e.g., 'crack', 'treadwear')
+        - confidence: Detection confidence (0-1)
+        - severity: Severity level (e.g., 'minor', 'moderate', 'severe')
+        - lifespan_reduction: Expected lifespan reduction (0-1)
+        - language: Conversation language ('si' or 'en')
+    
+    WebSocket Protocol:
+        Client -> Server:
+            - Binary: Raw PCM16 audio at 24kHz
+            - JSON: {"type": "audio", "audio": "base64..."}
+            - JSON: {"type": "audio_commit"} - finish speaking
+            - JSON: {"type": "text", "text": "..."} - text message
+        
+        Server -> Client:
+            - JSON: {"type": "session.ready", "session_id": "..."}
+            - JSON: {"type": "audio", "audio": "base64..."} - AI speech
+            - JSON: {"type": "audio.done"} - AI finished speaking
+            - JSON: {"type": "transcript", "text": "...", "role": "user|assistant"}
+            - JSON: {"type": "error", "message": "..."}
+    
+    Example Usage:
+        ws = new WebSocket('ws://localhost:8080/ws/tyre/voice-chat?damage_type=crack&confidence=0.85&severity=moderate&lifespan_reduction=0.15&language=si')
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        await websocket.close(code=1003, reason="Tyre AI system not available")
+        return
+    
+    # Accept WebSocket connection
+    await websocket.accept()
+    logger.info(f"🎤 Voice chat WebSocket connected")
+    
+    try:
+        # Generate session ID
+        import uuid
+        session_id = str(uuid.uuid4())
+        
+        # Prepare damage information
+        damage_info = {
+            "damage_type": damage_type,
+            "confidence": confidence,
+            "severity": severity,
+            "lifespan_reduction": lifespan_reduction
+        }
+        
+        # Get voice handler
+        voice_handler = get_voice_handler()
+        if not voice_handler:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Voice service not configured"
+            })
+            await websocket.close()
+            return
+        
+        # Handle the voice session
+        await voice_handler.handle_voice_session(
+            websocket,
+            session_id,
+            damage_info,
+            language
+        )
+        
+    except WebSocketDisconnect:
+        logger.info("📱 Voice chat client disconnected")
+    except Exception as e:
+        logger.error(f"❌ Voice chat WebSocket error: {e}", exc_info=True)
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Session error: {str(e)}"
+            })
+        except:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
+
 # ============================================================================
 # END TYRE HEALTH SYSTEM
 # ============================================================================
@@ -1801,11 +2000,20 @@ def home():
 @app.get("/health")
 def health():
     """Health check endpoint with system diagnostics"""
+    voice_available = False
+    if TYRE_SYSTEM_AVAILABLE and get_voice_handler:
+        try:
+            handler = get_voice_handler()
+            voice_available = handler is not None
+        except:
+            pass
+    
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "features": {
             "tyre_system": TYRE_SYSTEM_AVAILABLE,
+            "voice_chat": voice_available,
             "pytorch": TORCH_AVAILABLE,
             "stripe": stripe is not None,
         }

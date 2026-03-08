@@ -484,6 +484,71 @@ class TyreHealthAssistant:
             return None
         
         return self.conversations[session_id]
+    
+    def text_to_speech(self, text: str, language: str = "si") -> bytes:
+        """
+        Convert text to speech using OpenAI TTS
+        
+        Args:
+            text: Text to convert
+            language: Language code (si for Sinhala, en for English)
+        
+        Returns:
+            Audio bytes (MP3 format)
+        """
+        if not self.enabled:
+            logger.warning("⚠ OpenAI TTS not available - returning empty audio")
+            return b""
+        
+        try:
+            # OpenAI TTS supports multiple voices
+            # Use 'nova' for female voice, 'onyx' for male voice
+            voice = "nova"  # Good for both English and other languages
+            
+            response = self.client.audio.speech.create(
+                model="tts-1",  # Use tts-1-hd for higher quality
+                voice=voice,
+                input=text,
+                speed=0.9  # Slightly slower for clarity
+            )
+            
+            audio_bytes = response.content
+            logger.info(f"✅ Generated speech audio: {len(audio_bytes)} bytes")
+            return audio_bytes
+            
+        except Exception as e:
+            logger.error(f"❌ TTS error: {e}")
+            return b""
+    
+    def speech_to_text(self, audio_file) -> str:
+        """
+        Convert speech to text using OpenAI Whisper
+        
+        Args:
+            audio_file: Audio file object (bytes or file-like)
+        
+        Returns:
+            Transcribed text
+        """
+        if not self.enabled:
+            logger.warning("⚠ OpenAI Whisper not available")
+            return ""
+        
+        try:
+            # OpenAI Whisper API automatically detects language
+            transcription = self.client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language="si"  # Hint: Sinhala (also supports auto-detection)
+            )
+            
+            text = transcription.text
+            logger.info(f"✅ Transcribed audio: {text[:50]}...")
+            return text
+            
+        except Exception as e:
+            logger.error(f"❌ Speech-to-text error: {e}")
+            return ""
 
 
 # Initialize global assistant instance
