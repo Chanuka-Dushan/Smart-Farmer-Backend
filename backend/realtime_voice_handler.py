@@ -271,64 +271,8 @@ Important:
     ):
         """
         Forward responses from OpenAI to mobile app
+        Note: Greeting is sent proactively in handle_voice_session, not here
         """
-        first_greeting_sent = False
-        
-        async def trigger_greeting():
-            nonlocal first_greeting_sent
-            if first_greeting_sent:
-                logger.debug("⏭️ Skipping greeting - already sent")
-                return
-            
-            try:
-                first_greeting_sent = True
-                logger.info(f"🎤 Triggering initial AI greeting for session {session_id}")
-                
-                # Trigger initial greeting after session is ready
-                language_name = "Sinhala" if language == "si" else "English"
-                # Format damage type for better speech
-                damage_type_clean = damage_info['damage_type'].replace('_', ' ').replace('1', '').replace('2', '').strip()
-                damage_details = f"{damage_type_clean} with {damage_info['severity']} severity"
-                
-                greeting_text = (
-                    f"Greet the user warmly in {language_name}. "
-                    f"Tell them you have analyzed the tyre and detected {damage_details}. "
-                    f"Ask them how many hours per week they typically use the tractor so you can estimate the remaining life. "
-                    f"Keep it very brief and conversational (max 2 sentences). Respond ONLY in {language_name}."
-                )
-                
-                # Add the greeting message to the conversation
-                greeting_item = {
-                    "type": "conversation.item.create",
-                    "item": {
-                        "type": "message",
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_text",
-                                "text": greeting_text
-                            }
-                        ]
-                    }
-                }
-                logger.info(f"📤 Sending greeting item to OpenAI")
-                await openai_ws.send(json.dumps(greeting_item))
-                
-                # Trigger AI response with audio modality
-                response_event = {
-                    "type": "response.create",
-                    "response": {
-                        "modalities": ["text", "audio"]
-                    }
-                }
-                logger.info(f"📤 Sending response.create to OpenAI")
-                await openai_ws.send(json.dumps(response_event))
-                logger.info("✅ Greeting request successfully sent to OpenAI")
-                
-            except Exception as e:
-                logger.error(f"❌ Error in trigger_greeting: {e}", exc_info=True)
-                first_greeting_sent = False  # Reset to allow retry
-
         try:
             async for message in openai_ws:
                 try:
@@ -341,18 +285,16 @@ Important:
                     
                     # Handle different event types
                     if event_type == "session.created":
-                        logger.info("✅ OpenAI session created - triggering greeting")
+                        logger.info("✅ OpenAI session created")
                         await client_ws.send_json({
                             "type": "session.ready",
                             "session_id": session_id
                         })
-                        # Try to trigger greeting immediately
-                        await trigger_greeting()
+                        # Greeting is sent proactively - no need to trigger here
                         
                     elif event_type == "session.updated":
-                        logger.info("✅ OpenAI session updated - attempting greeting trigger")
-                        # Also try to trigger greeting on update to be safe
-                        await trigger_greeting()
+                        logger.info("✅ OpenAI session updated")
+                        # Greeting already sent proactively
                         
                     elif event_type == "response.audio.delta":
                         # Streaming audio from OpenAI
