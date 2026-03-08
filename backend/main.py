@@ -20,14 +20,7 @@ from sqlalchemy import Integer, Boolean, Text, DateTime
 import shutil
 from pathlib import Path
 import logging
-try:
-    import tensorflow as tf
-    import numpy as np
-    tensorflow_available = True
-    print("✓ TensorFlow available")
-except ImportError as e:
-    tensorflow_available = False
-    print(f"⚠ TensorFlow not available: {e}")
+import numpy as np
 from io import BytesIO
 from PIL import Image
 import requests
@@ -40,8 +33,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ml_utils import ImagePreprocessor, PredictionValidator, clip_prediction, PartIdentifier, TORCH_AVAILABLE
 from config import (
     MIN_PREDICTION_CONFIDENCE,
-    MODEL_PATH,
-    DISABLE_TENSORFLOW,
     PART_MODEL_PATH,
     PART_LABEL_PATH,
     DISABLE_PART_IDENTIFICATION,
@@ -991,82 +982,12 @@ WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 if not WEATHER_API_KEY:
     logger.warning("⚠️ WEATHER_API_KEY not set - weather forecasting will be disabled")
 
-# --- Vision# Model Configuration
-MODEL_VERSION = os.getenv("MODEL_VERSION", "v1.0")
-MODEL_PATH = os.getenv("MODEL_PATH", "smart_farmer_vision_v1.h5")  # Fixed: removed models/ prefix
+# Initialize machine learning utilities
 MIN_PREDICTION_CONFIDENCE = float(os.getenv("MIN_PREDICTION_CONFIDENCE", "0.7"))
+image_preprocessor = ImagePreprocessor(target_size=(224, 224))
+prediction_validator = PredictionValidator(min_confidence=MIN_PREDICTION_CONFIDENCE)
 
-# Check if we should disable TensorFlow in production (for performance)
-# Only disable if explicitly set via environment variable
-# But also disable automatically in production environments for reliability
-DISABLE_TENSORFLOW = (
-    os.getenv("DISABLE_TENSORFLOW", "false").lower() == "true" or
-    os.getenv("DYNO") is not None or  # Heroku
-    os.getenv("RENDER") is not None or  # Render
-    os.getenv("RAILWAY_ENVIRONMENT") is not None  # Railway
-)
-
-print(f"🔧 TensorFlow disabled: {DISABLE_TENSORFLOW}")
-
-def download_model_from_spaces():
-    """Download ML model from DigitalOcean Spaces if not present locally"""
-    import requests
-    from pathlib import Path
-    
-    # Check if model already exists
-    if Path(MODEL_PATH).exists():
-        logger.info(f"✓ Model already exists locally: {MODEL_PATH}")
-        return True
-    
-    # Check if MODEL_URL is set
-    model_url = os.getenv("MODEL_URL")
-    if not model_url:
-        logger.warning("⚠️ MODEL_URL not set - cannot download model from Spaces")
-        return False
-    
-    try:
-        logger.info(f"📥 Downloading model from Spaces: {model_url}")
-        
-        # Create models directory if needed
-        Path(MODEL_PATH).parent.mkdir(parents=True, exist_ok=True)
-        
-        # Download model
-        response = requests.get(model_url, timeout=60)
-        response.raise_for_status()
-        
-        # Save model
-        with open(MODEL_PATH, 'wb') as f:
-            f.write(response.content)
-        
-        file_size = Path(MODEL_PATH).stat().st_size / 1024 / 1024
-        logger.info(f"✅ Model downloaded successfully ({file_size:.2f} MB)")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to download model: {e}")
-        return False
-
-# Try to download model from Spaces if not present
-if not DISABLE_TENSORFLOW and tensorflow_available:
-    download_model_from_spaces()
-
-# Load Vision Model
-cnn_model = None
-if tensorflow_available and not DISABLE_TENSORFLOW:
-    try:
-        # Disable TensorFlow warnings and optimize for production
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TensorFlow logging
-        os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN optimizations that cause warnings
-
-        cnn_model = tf.keras.models.load_model(MODEL_PATH)
-        logger.info(f"✓ Vision Model Loaded: {MODEL_PATH}")
-    except Exception as e:
-        cnn_model = None
-        print(f"⚠️ Vision Model Not Found ({e}). Using Simulation Mode.")
-elif DISABLE_TENSORFLOW:
-    print("⚠️ TensorFlow disabled for production performance. Using Simulation Mode.")
-else:
-    print("⚠️ TensorFlow not available. Using Simulation Mode for vision analysis.")
+print("✓ ML utilities initialized (TensorFlow removed - using Ultralytics for vision)")
 
 # --- Part Identification Model (PyTorch) ---
 part_identifier = None
@@ -1211,58 +1132,78 @@ async def predict_lifecycle(
             logger.warning(f"⚠️ Image validation failed: {validation_message}")
             raise HTTPException(status_code=400, detail=f"Invalid image: {validation_message}")
         
-        if cnn_model and tensorflow_available:
+        # Check if this is a tyre - use tyre damage detection system
+        part_lower = part_name.lower()
+        is_tyre = any(keyword in part_lower for keyword in ['tyre', 'tire', 'wheel'])
+        
+        if is_tyre and TYRE_SYSTEM_AVAILABLE:
             try:
-                # Preprocess image
-                img_array = image_preprocessor.preprocess_image(img_data)
-                if img_array is None:
-                    raise ValueError("Image preprocessing failed")
+                # Save image temporarily for tyre analysis
+                temp_dir = Path("temp") / "lifecycle_tyres"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                temp_path = temp_dir / f"tyre_{timestamp}.jpg"
                 
-                # Predict
-                prediction = cnn_model.predict(img_array, verbose=0)
-                raw_prediction = float(prediction[0][0])
+                with open(temp_path, "wb") as f:
+                    f.write(img_data)
                 
-                # Clip to valid range
-                visual_damage = clip_prediction(raw_prediction, 0.0, 1.0)
+                # Use tyre damage detector
+                detector = get_tyre_detector()
+                result = detector.detect_damage(str(temp_path), confidence_threshold=0.25, save_annotated=False)
                 
-                # Calculate confidence
-                confidence = prediction_validator.calculate_confidence(visual_damage)
+                if result.get("success") and result.get("detections_count", 0) > 0:
+                    # Extract damage from tyre detection
+                    primary_damage = result.get("primary_damage")
+                    if primary_damage:
+                        severity = primary_damage.get("severity", "minor")
+                        damage_type = primary_damage.get("damage_type", "unknown")
+                        detection_confidence = primary_damage.get("confidence", 0.5)
+                        
+                        # Map severity to damage percentage
+                        severity_map = {
+                            "minor": 0.25,      # 25% damage
+                            "moderate": 0.50,   # 50% damage
+                            "severe": 0.75      # 75% damage
+                        }
+                        visual_damage = severity_map.get(severity, 0.35)
+                        confidence = detection_confidence
+                        analysis_model = f"YOLOv8 Detection - {damage_type} ({severity})"
+                        logger.info(f"🚗 Tyre damage detected: {severity} - {int(visual_damage*100)}% damage")
+                    else:
+                        visual_damage = 0.10  # Minimal damage if no issues detected
+                        confidence = 0.8
+                        analysis_model = "YOLOv8 - No damage detected"
+                else:
+                    # No damage detected or detection failed
+                    visual_damage = 0.10
+                    confidence = 0.7
+                    analysis_model = "YOLOv8 - Clean tyre"
                 
-                # Validate prediction
-                is_valid, validation_msg = prediction_validator.validate_prediction(
-                    visual_damage, 
-                    confidence
-                )
-                
-                if not is_valid:
-                    logger.warning(f"⚠️ Prediction validation warning: {validation_msg}")
-                    # Continue but flag for review
-                
-                analysis_model = f"MobileNetV2 (Transfer Learning) - Confidence: {confidence:.2%}"
-                logger.info(f"👁️ Vision Model: {int(visual_damage * 100)}% Damage (Confidence: {confidence:.2%})")
-                
-                # Log prediction for monitoring
-                prediction_validator.log_prediction({
-                    "part_name": part_name,
-                    "prediction": visual_damage,
-                    "confidence": confidence,
-                    "raw_prediction": raw_prediction,
-                    "location": location
-                })
-                
+                # Cleanup temp file
+                try:
+                    temp_path.unlink()
+                except:
+                    pass
+                    
             except Exception as e:
-                logger.error(f"❌ Vision model prediction failed: {e}")
+                logger.error(f"❌ Tyre damage detection failed: {e}")
                 # Fall back to simulation
                 visual_damage = 0.35
                 confidence = 0.5
-                analysis_model = "Simulation Mode (Model Error)"
-                logger.warning("⚠️ Using simulation mode due to model error")
+                analysis_model = "Simulation Mode (Tyre detection error)"
         else:
-            # Fallback if TensorFlow not available or model not loaded
-            logger.info("⚠️ Vision analysis unavailable. Using simulation mode.")
-            visual_damage = 0.35
+            # For non-tyre parts or if tyre system unavailable, use simulation mode
+            # Generate realistic damage based on usage
+            if usage_hours_value > 0:
+                # Estimate damage from usage (rough heuristic)
+                estimated_damage = min(0.85, usage_hours_value / fresh_life * 1.2)
+                visual_damage = np.clip(estimated_damage, 0.10, 0.85)
+            else:
+                visual_damage = 0.35  # Default assumption
+            
             confidence = 0.5
-            analysis_model = "Simulation Mode"
+            analysis_model = "Simulation Mode (TensorFlow removed - use tyre detection for tyres)"
+            logger.info(f"⚠️ Using simulation mode for {part_name}: {int(visual_damage*100)}% estimated damage")
 
         # C. ANALYZE TIME (Historical + Future)
         # 1. Past Stress
@@ -1829,8 +1770,8 @@ def health():
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "features": {
-            "tensorflow": tensorflow_available,
             "tyre_system": TYRE_SYSTEM_AVAILABLE,
+            "pytorch": TORCH_AVAILABLE,
             "stripe": stripe is not None,
         }
     }
