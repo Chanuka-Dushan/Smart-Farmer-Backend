@@ -8,9 +8,10 @@ import json
 import asyncio
 import logging
 import base64
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 import websockets
 from datetime import datetime
+from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
 
@@ -140,33 +141,56 @@ Important:
     
     async def handle_client_to_openai(
         self,
-        client_ws: websockets.WebSocketServerProtocol,
+        client_ws: WebSocket,
         openai_ws: websockets.WebSocketClientProtocol
     ):
         """
         Forward audio from mobile app to OpenAI
         """
         try:
-            async for message in client_ws:
+            while True:
+                # Receive message from FastAPI WebSocket
+                message = await client_ws.receive()
+                
+                # Check message type
+                msg_type = message.get("type")
+                if msg_type == "websocket.disconnect":
+                    logger.info("📱 Client disconnected")
+                    break
+                
                 try:
-                    if isinstance(message, bytes):
+                    # Handle binary audio data
+                    if msg_type == "websocket.receive" and "bytes" in message:
                         # Raw audio from mobile app - convert to base64 and send to OpenAI
-                        audio_b64 = base64.b64encode(message).decode('utf-8')
+                        audio_bytes = message["bytes"]
+                        audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
                         audio_event = {
                             "type": "input_audio_buffer.append",
                             "audio": audio_b64
                         }
                         await openai_ws.send(json.dumps(audio_event))
                         
-                    elif isinstance(message, str):
+                    elif msg_type == "websocket.receive" and "text" in message:
                         # JSON message from mobile app
-                        data = json.loads(message)
+                        data = json.loads(message["text"])
                         
                         if data.get("type") == "audio":
-                            # Base64 encoded audio
+                            # Base64 encoded audio (may be WAV format)
+                            audio_b64 = data.get("audio")
+                            
+                            # Decode to check if it's WAV format
+                            audio_bytes = base64.b64decode(audio_b64)
+                            
+                            # Check for WAV header (RIFF...WAVE)
+                            if audio_bytes[:4] == b'RIFF' and audio_bytes[8:12] == b'WAVE':
+                                # Strip WAV header (first 44 bytes) to get PCM16 data
+                                pcm_data = audio_bytes[44:]
+                                audio_b64 = base64.b64encode(pcm_data).decode('utf-8')
+                                logger.info(f"Stripped WAV header, PCM data size: {len(pcm_data)} bytes")
+                            
                             audio_event = {
                                 "type": "input_audio_buffer.append",
-                                "audio": data.get("audio")
+                                "audio": audio_b64
                             }
                             await openai_ws.send(json.dumps(audio_event))
                             
@@ -210,14 +234,12 @@ Important:
                 except Exception as e:
                     logger.error(f"❌ Error processing client message: {e}")
                     
-        except websockets.exceptions.ConnectionClosed:
-            logger.info("📱 Client disconnected")
         except Exception as e:
             logger.error(f"❌ Error in client->OpenAI handler: {e}")
     
     async def handle_openai_to_client(
         self,
-        client_ws: websockets.WebSocketServerProtocol,
+        client_ws: WebSocket,
         openai_ws: websockets.WebSocketClientProtocol,
         session_id: str
     ):
@@ -237,63 +259,63 @@ Important:
                     # Handle different event types
                     if event_type == "session.created":
                         logger.info("✅ OpenAI session created")
-                        await client_ws.send(json.dumps({
+                        await client_ws.send_json({
                             "type": "session.ready",
                             "session_id": session_id
-                        }))
+                        })
                         
                     elif event_type == "response.audio.delta":
                         # Streaming audio from OpenAI
                         audio_b64 = event.get("delta")
                         if audio_b64:
-                            await client_ws.send(json.dumps({
+                            await client_ws.send_json({
                                 "type": "audio",
                                 "audio": audio_b64
-                            }))
+                            })
                             
                     elif event_type == "response.audio.done":
                         # Audio response complete
-                        await client_ws.send(json.dumps({
+                        await client_ws.send_json({
                             "type": "audio.done"
-                        }))
+                        })
                         
                     elif event_type == "response.audio_transcript.delta":
                         # Transcript of AI response (for debugging/display)
                         transcript = event.get("delta")
                         if transcript:
-                            await client_ws.send(json.dumps({
+                            await client_ws.send_json({
                                 "type": "transcript",
                                 "text": transcript,
                                 "role": "assistant"
-                            }))
+                            })
                             
                     elif event_type == "conversation.item.input_audio_transcription.completed":
                         # User's speech transcribed
                         transcript = event.get("transcript")
                         if transcript:
-                            await client_ws.send(json.dumps({
+                            await client_ws.send_json({
                                 "type": "transcript",
                                 "text": transcript,
                                 "role": "user"
-                            }))
+                            })
                             
                     elif event_type == "response.done":
                         # Complete response finished
-                        await client_ws.send(json.dumps({
+                        await client_ws.send_json({
                             "type": "response.done"
-                        }))
+                        })
                         
                     elif event_type == "error":
                         # Error from OpenAI
                         error_msg = event.get("error", {}).get("message", "Unknown error")
                         logger.error(f"❌ OpenAI error: {error_msg}")
-                        await client_ws.send(json.dumps({
+                        await client_ws.send_json({
                             "type": "error",
                             "message": error_msg
-                        }))
+                        })
                         
                     # Forward all events to client for flexibility
-                    await client_ws.send(message)
+                    await client_ws.send_text(message)
                     
                 except json.JSONDecodeError:
                     logger.warning("⚠️ Invalid JSON from OpenAI")
@@ -307,7 +329,7 @@ Important:
     
     async def handle_voice_session(
         self,
-        client_ws: websockets.WebSocketServerProtocol,
+        client_ws: WebSocket,
         session_id: str,
         damage_info: dict,
         language: str = "si"
@@ -324,10 +346,10 @@ Important:
             openai_ws = await self.connect_to_openai()
             
             if not openai_ws:
-                await client_ws.send(json.dumps({
+                await client_ws.send_json({
                     "type": "error",
                     "message": "Failed to connect to voice service"
-                }))
+                })
                 return
             
             # Configure the session
@@ -352,10 +374,10 @@ Important:
         except Exception as e:
             logger.error(f"❌ Voice session error: {e}", exc_info=True)
             try:
-                await client_ws.send(json.dumps({
+                await client_ws.send_json({
                     "type": "error",
                     "message": f"Session error: {str(e)}"
-                }))
+                })
             except:
                 pass
                 
