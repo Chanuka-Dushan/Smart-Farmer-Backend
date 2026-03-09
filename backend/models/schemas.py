@@ -200,6 +200,8 @@ class RatingRequest(BaseModel):
 
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, ConfigDict
+from typing import List, Optional
+from pydantic import BaseModel
 
 
 # Shared fields
@@ -276,3 +278,33 @@ class FeedbackCreate(BaseModel):
             raise ValueError("feedback must be 'accept' or 'reject'")
 
         return value
+
+class ForecastItemResponse(BaseModel):
+    part_id: int
+    part_name: str
+    monthly_demand: List[int]
+    forecast_next_month: float
+
+
+class ReorderItemResponse(BaseModel):
+    part_id: int
+    part_name: str
+    current_stock: int
+    reorder_point: int
+    forecast_next_month: float
+    recommended_reorder_qty: int
+    reason: str
+
+
+class SubstituteSuggestionResponse(BaseModel):
+    original_part_id: int
+    original_part_name: str
+    substitute_part_id: int
+    substitute_part_name: str
+    feedback_score: float
+    reason: str
+
+
+class InventoryRecommendResponse(BaseModel):
+    reorder_list: List[ReorderItemResponse]
+    suggested_substitutes: List[SubstituteSuggestionResponse]
