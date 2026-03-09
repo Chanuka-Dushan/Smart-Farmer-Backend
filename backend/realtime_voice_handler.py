@@ -144,14 +144,14 @@ Important:
             # CRITICAL: Don't send user text message - it causes text-only response
             # Instead, directly trigger AI response which forces audio generation
             
-            logger.info("📤 Triggering AI greeting with audio-only response...")
-            logger.error(f"📤 [DEBUG] Forcing audio response without user text input")
+            logger.info("📤 Triggering AI greeting with audio response...")
+            logger.error(f"📤 [DEBUG] Forcing audio response")
             
-            # Trigger AI response with AUDIO-ONLY modality (no text fallback)
+            # Trigger AI response with audio+text modality (OpenAI requires both)
             response_event = {
                 "type": "response.create",
                 "response": {
-                    "modalities": ["audio"],  # AUDIO ONLY - no text option!
+                    "modalities": ["audio", "text"],  # OpenAI requires both
                     "voice": "alloy",
                     "output_audio_format": "pcm16"
                 }
