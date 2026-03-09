@@ -102,6 +102,7 @@ Important:
 
             # Configure session with voice settings
             # CRITICAL: Audio modality MUST come first to force audio output
+            # No explicit language in transcription - Whisper auto-detects (supports Sinhala)
             session_config = {
                 "type": "session.update",
                 "session": {
@@ -112,7 +113,6 @@ Important:
                     "output_audio_format": "pcm16",
                     "input_audio_transcription": {
                         "model": "whisper-1"
-                        # No explicit language - let Whisper auto-detect (supports Sinhala in auto mode)
                     },
                     "turn_detection": None,
                     "temperature": 0.8,

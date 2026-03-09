@@ -68,3 +68,6 @@ ultralytics==8.2.103
 openai>=1.0.0
 opencv-python-headless==4.10.0.84
 websockets>=13.0,<15.0
+
+# SSH/SFTP
+paramiko>=3.0.0
