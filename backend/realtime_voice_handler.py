@@ -119,7 +119,26 @@ Important:
             }
             
             logger.info("📤 Sending session configuration to OpenAI...")
-        logger.error(f"📤 [DEBUG] Session config: modalities={session_config['session']['modalities']}, voice={session_config['session']['voice']}")
+            logger.error(f"📤 [DEBUG] Session config: modalities={session_config['session']['modalities']}, voice={session_config['session']['voice']}")
+            await openai_ws.send(json.dumps(session_config))
+            logger.error("✅ [DEBUG] Session configuration sent successfully")
+            logger.info("✅ Session configuration sent successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to configure session: {e}", exc_info=True)
+            raise
+    
+    async def send_greeting(
+        self,
+        openai_ws: websockets.WebSocketClientProtocol,
+        damage_info: dict,
+        language: str = "si"
+    ):
+        """
+        Send initial AI greeting to start the conversation
+        Sends a simple user message to trigger the AI's greeting based on system instructions
+        """
+        try:
             # Simple user message to trigger conversation start
             # The AI will respond based on the system instructions
             greeting_trigger = "Hello" if language == "en" else "හෙලෝ"
@@ -162,14 +181,6 @@ Important:
             await openai_ws.send(json.dumps(response_event))
             logger.info("✅ Greeting successfully sent to OpenAI")
             logger.error("✅ [DEBUG] Waiting for audio response (expecting response.audio.delta events)...")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to send greeting: {e}", exc_info=True)
-            raise
-            
-            logger.info("📤 Triggering AI response with audio...")
-            await openai_ws.send(json.dumps(response_event))
-            logger.info("✅ Greeting successfully sent to OpenAI")
             
         except Exception as e:
             logger.error(f"❌ Failed to send greeting: {e}", exc_info=True)
