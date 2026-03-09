@@ -24,7 +24,7 @@ opencv-python-headless==4.10.0.84
 aiofiles==23.2.1
 gunicorn==21.2.0
 email-validator==2.1.0
-qrcode>=7.0.0
+qrcode[pil]>=7.0.0
 
 # ML
 torch==2.1.0
