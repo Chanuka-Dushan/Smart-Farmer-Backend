@@ -47,6 +47,7 @@ from routes.search import router as search_router
 from routes.comparison import router as comparison_router
 from routes import feedback
 from routes.part_routes import router as part_router
+from routes.inventory import router as inventory_router
 
 from routes import blockchain_routes
 
@@ -950,6 +951,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+
 app.include_router(blockchain_routes.router)
 
 #from routes.recommendation import router as recommendation_router
@@ -962,7 +965,7 @@ app.include_router(search_router)
 app.include_router(comparison_router)
 app.include_router(feedback.router)
 app.include_router(part_router)
-
+app.include_router(inventory_router)
 # --- AI Knowledge Integration ---
 try:
     import ai_knowledge
