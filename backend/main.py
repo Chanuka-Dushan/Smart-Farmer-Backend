@@ -949,11 +949,6 @@ print("✓ ML utilities initialized (TensorFlow removed - using Ultralytics for 
 # --- Part Identification Model (PyTorch) ---
 # Deferred initialization - will be loaded when needed
 part_identifier = None
-else:
-    if DISABLE_PART_IDENTIFICATION:
-        logger.info("⚠️ Part identification disabled by configuration")
-    else:
-        logger.info("⚠️ PyTorch not available: part identification disabled")
 
 # --- Historical Stress Engine ---
 def get_historical_stress_factor(location: str, part_name: str):
