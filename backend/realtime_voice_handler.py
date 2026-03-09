@@ -285,16 +285,11 @@ Important:
                     
                     # Handle different event types
                     if event_type == "session.created":
-                        logger.info("✅ OpenAI session created")
-                        await client_ws.send_json({
-                            "type": "session.ready",
-                            "session_id": session_id
-                        })
-                        # Greeting is sent proactively - no need to trigger here
+                        logger.info("✅ OpenAI session created (session.ready already sent proactively)")
+                        # session.ready is sent proactively in handle_voice_session
                         
                     elif event_type == "session.updated":
                         logger.info("✅ OpenAI session updated")
-                        # Greeting already sent proactively
                         
                     elif event_type == "response.audio.delta":
                         # Streaming audio from OpenAI
