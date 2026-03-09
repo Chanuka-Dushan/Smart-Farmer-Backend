@@ -119,26 +119,7 @@ Important:
             }
             
             logger.info("📤 Sending session configuration to OpenAI...")
-            logger.error("📤 [DEBUG] Sending session configuration to OpenAI...")  # Force ERROR level
-            await openai_ws.send(json.dumps(session_config))
-            logger.error("✅ [DEBUG] Session configuration sent successfully")
-            logger.info("✅ Session configuration sent successfully")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to configure session: {e}", exc_info=True)
-            raise
-    
-    async def send_greeting(
-        self,
-        openai_ws: websockets.WebSocketClientProtocol,
-        damage_info: dict,
-        language: str = "si"
-    ):
-        """
-        Send initial AI greeting to start the conversation
-        Sends a simple user message to trigger the AI's greeting based on system instructions
-        """
-        try:
+        logger.error(f"📤 [DEBUG] Session config: modalities={session_config['session']['modalities']}, voice={session_config['session']['voice']}")
             # Simple user message to trigger conversation start
             # The AI will respond based on the system instructions
             greeting_trigger = "Hello" if language == "en" else "හෙලෝ"
@@ -162,20 +143,25 @@ Important:
             logger.error(f"📤 [DEBUG] Sending greeting trigger: '{greeting_trigger}'")
             await openai_ws.send(json.dumps(greeting_item))
             
-            # Trigger AI response with EXPLICIT audio modality
+            # Small delay to ensure message is processed
+            await asyncio.sleep(0.1)
+            
+            # Trigger AI response with EXPLICIT audio modality and voice
             response_event = {
                 "type": "response.create",
                 "response": {
-                    "modalities": ["text", "audio"],
-                    "instructions": "Respond with voice. Start by greeting the user warmly and mentioning the tyre damage you detected. Ask about their usage patterns. Keep it brief (2 sentences max)."
+                    "modalities": ["audio", "text"],  # Audio first!
+                    "voice": "alloy",  # Explicitly set voice
+                    "output_audio_format": "pcm16",
+                    "instructions": "You must respond with voice audio. Greet the user warmly in their language and ask about tyre usage. Keep it brief (2 sentences)."
                 }
             }
             
             logger.info("📤 Triggering AI audio response...")
-            logger.error("📤 [DEBUG] Triggering response with audio modality")
+            logger.error(f"📤 [DEBUG] Response config: {json.dumps(response_event)}")
             await openai_ws.send(json.dumps(response_event))
             logger.info("✅ Greeting successfully sent to OpenAI")
-            logger.error("✅ [DEBUG] Waiting for audio response...")
+            logger.error("✅ [DEBUG] Waiting for audio response (expecting response.audio.delta events)...")
             
         except Exception as e:
             logger.error(f"❌ Failed to send greeting: {e}", exc_info=True)
