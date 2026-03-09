@@ -939,25 +939,16 @@ WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 if not WEATHER_API_KEY:
     logger.warning("⚠️ WEATHER_API_KEY not set - weather forecasting will be disabled")
 
-# Initialize machine learning utilities
+# Initialize machine learning utilities (deferred - imported later where needed)
 MIN_PREDICTION_CONFIDENCE = float(os.getenv("MIN_PREDICTION_CONFIDENCE", "0.7"))
-image_preprocessor = ImagePreprocessor(target_size=(224, 224))
-prediction_validator = PredictionValidator(min_confidence=MIN_PREDICTION_CONFIDENCE)
+image_preprocessor = None
+prediction_validator = None
 
 print("✓ ML utilities initialized (TensorFlow removed - using Ultralytics for vision)")
 
 # --- Part Identification Model (PyTorch) ---
+# Deferred initialization - will be loaded when needed
 part_identifier = None
-if TORCH_AVAILABLE and not DISABLE_PART_IDENTIFICATION:
-    try:
-        part_identifier = PartIdentifier(PART_MODEL_PATH, PART_LABEL_PATH)
-        if part_identifier.load_model():
-            logger.info(f"✓ Part identification model loaded: {PART_MODEL_PATH}")
-        else:
-            part_identifier = None
-    except Exception as e:
-        part_identifier = None
-        logger.warning(f"Part identification model not loaded: {e}")
 else:
     if DISABLE_PART_IDENTIFICATION:
         logger.info("⚠️ Part identification disabled by configuration")
