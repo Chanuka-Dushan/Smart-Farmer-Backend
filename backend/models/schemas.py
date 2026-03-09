@@ -1,6 +1,7 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
+
 
 # ============= Mobile App User Schemas =============
 
@@ -157,3 +158,119 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str = Field(..., min_length=6)
 
+# ================= Blockchain Schemas ==================
+
+from pydantic import BaseModel, Field
+from typing import Optional, List
+
+
+# -------------------------------------------------------
+# Register Part on Blockchain
+# -------------------------------------------------------
+
+class PartRegisterRequest(BaseModel):
+    """Request body for registering a part on blockchain."""
+
+    serial_number: str = Field(..., min_length=5)
+    part_id: str
+    manufacturer: str
+    country: str
+    owner: str
+    minted_at: str
+    refurbished: bool = False
+
+
+# -------------------------------------------------------
+# Blockchain Register Response
+# -------------------------------------------------------
+
+class BlockchainRegisterResponse(BaseModel):
+    """Response after registering part in blockchain."""
+
+    serial_number: str
+    blockchain_tx_hash: str
+    qr_generated: bool
+    message: str
+
+
+# -------------------------------------------------------
+# Transfer Request (Handshake Step 1)
+# -------------------------------------------------------
+
+class TransferRequest(BaseModel):
+    """Buyer requests ownership transfer."""
+
+    serial_number: str
+    buyer_id: int
+
+
+# -------------------------------------------------------
+# Transfer Approval (Handshake Step 2)
+# -------------------------------------------------------
+
+class TransferApprovalRequest(BaseModel):
+    """Seller approves transfer request."""
+
+    serial_number: str
+
+
+# -------------------------------------------------------
+# Blockchain Transfer Response
+# -------------------------------------------------------
+
+class TransferResponse(BaseModel):
+    """Response after blockchain ownership transfer."""
+
+    serial_number: str
+    previous_owner: str
+    new_owner: str
+    blockchain_tx_hash: str
+    message: str
+
+
+# -------------------------------------------------------
+# QR Verification Request
+# -------------------------------------------------------
+
+class QRVerifyRequest(BaseModel):
+    """QR scan verification request."""
+
+    qr_data: str
+
+
+# -------------------------------------------------------
+# Ledger History Entry
+# -------------------------------------------------------
+
+class PartHistoryEntry(BaseModel):
+    """Single blockchain history record."""
+
+    owner: str
+    date: str
+    tx_hash: Optional[str]
+
+
+# -------------------------------------------------------
+# Part Verification Response
+# -------------------------------------------------------
+
+class PartVerificationResponse(BaseModel):
+    """Response returned when verifying a part."""
+
+    status: str
+    serial_number: str
+    manufacturer: str
+    current_owner: str
+    blockchain_registered: bool
+    history: List[PartHistoryEntry]
+
+
+# -------------------------------------------------------
+# Generic Message
+# -------------------------------------------------------
+
+class MessageResponse(BaseModel):
+    """Generic API response."""
+
+    message: str
+    success: bool = True

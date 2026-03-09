@@ -32,6 +32,9 @@ from PIL import Image
 import requests
 import json
 
+from routes.blockchain_routes import router as blockchain_routes
+from routes.parts_routes import router as parts_routes
+from routes.transfer_routes import router as transfer_routes
 
 
 # Configure logging
@@ -833,12 +836,17 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
         raise HTTPException(status_code=401, detail="Authentication failed")
 
 # --- 5. API Endpoints ---
-app = FastAPI()
+
+app = FastAPI(
+    swagger_ui_parameters={
+        "defaultModelsExpandDepth": -1
+    }
+)
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["farmerlk.me", "www.farmerlk.me", "http://localhost:3000", "http://localhost"],
+    allow_origins=["farmerlk.me", "www.farmerlk.me", "http://localhost:3000", "http://localhost", "http://localhost:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -848,6 +856,11 @@ app.add_middleware(
 from routes.recommendation import router as recommendation_router
 
 app.include_router(recommendation_router)
+
+app.include_router(blockchain_routes)
+app.include_router(parts_routes)
+app.include_router(transfer_routes)
+
 
 # --- AI Knowledge Integration ---
 try:
