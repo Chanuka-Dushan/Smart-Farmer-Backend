@@ -912,12 +912,13 @@ app.add_middleware(
 
 #app.include_router(recommendation_router)
 
-app.include_router(vector_admin_router)
-app.include_router(recommender_router)
-app.include_router(search_router)
-app.include_router(comparison_router)
-app.include_router(feedback.router)
-app.include_router(part_router)
+# Disabled - routers not imported/defined
+#app.include_router(vector_admin_router)
+#app.include_router(recommender_router)
+#app.include_router(search_router)
+#app.include_router(comparison_router)
+#app.include_router(feedback.router)
+#app.include_router(part_router)
 
 app.include_router(blockchain_routes)
 app.include_router(parts_routes)
