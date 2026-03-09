@@ -59,14 +59,15 @@ class RealtimeVoiceHandler:
         """
         Configure the Realtime API session with instructions and context
         """
-        # Build instructions based on damage information
-        damage_type = damage_info.get("damage_type", "unknown")
-        severity = damage_info.get("severity", "unknown")
-        confidence = damage_info.get("confidence", 0)
-        lifespan_reduction = damage_info.get("lifespan_reduction", 0)
-        
-        # System instructions for the voice assistant
-        instructions = f"""You are a friendly tyre health expert assistant speaking in {"Sinhala" if language == "si" else "English"}.
+        try:
+            # Build instructions based on damage information
+            damage_type = damage_info.get("damage_type", "unknown")
+            severity = damage_info.get("severity", "unknown")
+            confidence = damage_info.get("confidence", 0)
+            lifespan_reduction = damage_info.get("lifespan_reduction", 0)
+            
+            # System instructions for the voice assistant
+            instructions = f"""You are a friendly tyre health expert assistant speaking in {"Sinhala" if language == "si" else "English"}.
 
 DETECTED DAMAGE:
 - Type: {damage_type}
@@ -90,29 +91,31 @@ Important:
 - Show concern for safety when severe damage is detected
 """
 
-        # Configure session with voice settings
-        session_config = {
-            "type": "session.update",
-            "session": {
-                "modalities": ["text", "audio"],
-                "instructions": instructions,
-                "voice": "alloy",  # Options: alloy, echo, shimmer
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16",
-                "input_audio_transcription": {
-                    "model": "whisper-1"
-                },
-                "turn_detection": None, # Disable VAD to prevent auto-commit errors
-                "temperature": 0.8,
-                "max_response_output_tokens": 4096
+            # Configure session with voice settings
+            session_config = {
+                "type": "session.update",
+                "session": {
+                    "modalities": ["text", "audio"],
+                    "instructions": instructions,
+                    "voice": "alloy",
+                    "input_audio_format": "pcm16",
+                    "output_audio_format": "pcm16",
+                    "input_audio_transcription": {
+                        "model": "whisper-1"
+                    },
+                    "turn_detection": None,
+                    "temperature": 0.8,
+                    "max_response_output_tokens": 4096
+                }
             }
-        }
-        
-        await openai_ws.send(json.dumps(session_config))
-        logger.info("✅ Sent OpenAI session config (VAD disabled)")
-        
-        # Small delay to ensure session is ready
-        await asyncio.sleep(0.1)
+            
+            logger.info("📤 Sending session configuration to OpenAI...")
+            await openai_ws.send(json.dumps(session_config))
+            logger.info("✅ Session configuration sent successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to configure session: {e}", exc_info=True)
+            raise
     
     async def send_greeting(
         self,
@@ -271,38 +274,42 @@ Important:
     ):
         """
         Forward responses from OpenAI to mobile app
-        Note: Greeting is sent proactively in handle_voice_session, not here
+        Sends session.ready and greeting after receiving session.created from OpenAI
         """
         try:
+            logger.info("👂 Starting OpenAI event listener...")
+            event_count = 0
             async for message in openai_ws:
                 try:
+                    event_count += 1
                     event = json.loads(message)
                     event_type = event.get("type")
                     
-                    # Log interesting events
-                    if event_type not in ["response.audio.delta", "input_audio_buffer.speech_started"]:
-                        logger.debug(f"📡 OpenAI event: {event_type}")
+                    # Log ALL events initially to debug
+                    if event_count <= 10 or event_type not in ["response.audio.delta", "input_audio_buffer.speech_started"]:
+                        logger.info(f"📡 OpenAI event #{event_count}: {event_type}")
                     
                     # Handle different event types
                     if event_type == "session.created":
-                        logger.info("✅ OpenAI session created - sending session.ready to client")
+                        logger.info("🎉 OpenAI session created event received!")
                         
                         # Now OpenAI is ready, notify mobile client
                         await client_ws.send_json({
                             "type": "session.ready",
                             "session_id": session_id
                         })
+                        logger.info("✅ Sent session.ready to mobile client")
                         
                         # Mark as ready in session info
                         if session_id in self.sessions:
                             self.sessions[session_id]["ready_sent"] = True
                         
                         # Wait a moment for mobile client to process
-                        await asyncio.sleep(0.3)
+                        await asyncio.sleep(0.5)
                         
                         # Send greeting if not already sent
                         if session_id in self.sessions and not self.sessions[session_id].get("greeting_sent"):
-                            logger.info("🎤 Sending initial AI greeting...")
+                            logger.info("🎤 Now sending initial AI greeting...")
                             self.sessions[session_id]["greeting_sent"] = True
                             try:
                                 # Get damage_info from session
@@ -310,7 +317,7 @@ Important:
                                 language = self.sessions[session_id]["language"]
                                 await self.send_greeting(openai_ws, damage_info, language)
                             except Exception as e:
-                                logger.error(f"❌ Failed to send greeting: {e}")
+                                logger.error(f"❌ Failed to send greeting: {e}", exc_info=True)
                         
                     elif event_type == "session.updated":
                         logger.info("✅ OpenAI session updated")
