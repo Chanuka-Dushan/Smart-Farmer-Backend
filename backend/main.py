@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from pydantic import BaseModel
 from models.schemas import PartCreate, PartResponse, PartUpdate
+from models.part import Part
 
 from sqlalchemy import create_engine, Column, String, Integer, Boolean, Text, DateTime, Float
 from sqlalchemy.ext.declarative import declarative_base
@@ -52,6 +53,7 @@ from routes.recommender import router as recommender_router
 from routes.search import router as search_router
 from routes.comparison import router as comparison_router
 from routes import feedback
+from routes.part_routes import router as part_router
 
 from routes import blockchain_routes
 
@@ -826,14 +828,15 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
 # --- 5. API Endpoints ---
 app = FastAPI()
 
+from fastapi.middleware.cors import CORSMiddleware
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["farmerlk.me", "www.farmerlk.me", "http://localhost:3000", "http://localhost", "http://localhost:8000"],
+    allow_origins=["farmerlk.me", "www.farmerlk.me", "http://localhost:3000", "http://localhost", "http://localhost:8000",],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)
 
 app.include_router(blockchain_routes.router)
 
@@ -846,6 +849,7 @@ app.include_router(recommender_router)
 app.include_router(search_router)
 app.include_router(comparison_router)
 app.include_router(feedback.router)
+app.include_router(part_router)
 
 # --- AI Knowledge Integration ---
 try:
@@ -3235,18 +3239,18 @@ def get_all_parts(db: Session = Depends(get_db)):
 
 
 @app.get("/api/parts/search-by-name")
-def search_part_by_name_and_brand(
+def search_part_by_name_and_machine_model(
     name: str,
-    brand: Optional[str] = None,
+    machine_model: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """Search part by name (exact → partial fallback)"""
+    """Search part by name with exact match first, then partial match fallback."""
 
     # Exact match
     query = db.query(Part).filter(Part.name.ilike(name))
 
-    if brand:
-        query = query.filter(Part.brand.ilike(brand))
+    if machine_model:
+        query = query.filter(Part.machine_model.ilike(machine_model))
 
     part = query.first()
     if part:
@@ -3254,14 +3258,14 @@ def search_part_by_name_and_brand(
             "id": part.id,
             "name": part.name,
             "brand": part.brand,
-            "machine_model": part.machine_model      # ✅ Added
+            "machine_model": part.machine_model
         }
 
     # Partial match fallback
     query = db.query(Part).filter(Part.name.ilike(f"%{name}%"))
 
-    if brand:
-        query = query.filter(Part.brand.ilike(f"%{brand}%"))
+    if machine_model:
+        query = query.filter(Part.machine_model.ilike(f"%{machine_model}%"))
 
     part = query.first()
     if not part:
@@ -3271,7 +3275,7 @@ def search_part_by_name_and_brand(
         "id": part.id,
         "name": part.name,
         "brand": part.brand,
-        "machine_model": part.machine_model          # ✅ Added
+        "machine_model": part.machine_model
     }
 
 

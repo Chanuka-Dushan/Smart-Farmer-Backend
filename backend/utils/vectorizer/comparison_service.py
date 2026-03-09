@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 import numpy as np
 from sqlalchemy.orm import Session
@@ -12,7 +12,6 @@ sys.path.append(
 
 from models.part import Part
 from utils.vectorizer.vector_cache import get_part_vector
-from utils.vectorizer.recommender import get_feedback_score, build_explanation
 
 
 def _safe_float(value):
@@ -29,13 +28,6 @@ def compute_pair_scores(
     original_part: Part,
     alternative_part: Part
 ) -> Dict[str, float]:
-    """
-    Compute recommender scores between two specific parts.
-    Reuses the same logic as recommender:
-    hybrid_score = vector_similarity
-    feedback_score = 0.0
-    final_score = 0.90 * hybrid_score + 0.10 * feedback_score
-    """
     original_vector = get_part_vector(db, original_part.id)
     alternative_vector = get_part_vector(db, alternative_part.id)
 
@@ -51,7 +43,7 @@ def compute_pair_scores(
     vector_similarity = float(cosine_similarity(original_np, alternative_np)[0][0])
 
     hybrid_score = vector_similarity
-    feedback_score = get_feedback_score(original_part.id, alternative_part.id, db)
+    feedback_score = 0.0
     final_score = 0.90 * hybrid_score + 0.10 * feedback_score
 
     return {
@@ -63,9 +55,6 @@ def compute_pair_scores(
 
 
 def build_comparison_summary(original_part: Part, alternative_part: Part) -> Dict[str, Any]:
-    """
-    Build field-by-field comparison summary for frontend comparison view.
-    """
     original_diameter = _safe_float(getattr(original_part, "diameter", None))
     alternative_diameter = _safe_float(getattr(alternative_part, "diameter", None))
 
@@ -109,12 +98,13 @@ def serialize_part(part: Part) -> Dict[str, Any]:
         "machine_model": part.machine_model,
         "category": part.category,
         "price": part.price,
-        "diameter": part.diameter,
-        "material": part.material,
+        "diameter": getattr(part, "diameter", None),
+        "material": getattr(part, "material", None),
+        "lifespan": getattr(part, "lifespan", None),
         "compatibility_group": getattr(part, "compatibility_group", None),
-        "description": part.description,
-        "specs_json": part.specs_json,
-        "image_url": part.image_url
+        "description": getattr(part, "description", None),
+        "specs_json": getattr(part, "specs_json", None),
+        "image_url": getattr(part, "image_url", None)
     }
 
 
@@ -123,9 +113,6 @@ def compare_parts(
     original_part_id: int,
     alternative_part_id: int
 ) -> Dict[str, Any]:
-    """
-    Main comparison endpoint logic.
-    """
     original_part = db.query(Part).filter(Part.id == original_part_id).first()
     if not original_part:
         raise ValueError(f"Original part with id {original_part_id} not found")
@@ -136,18 +123,23 @@ def compare_parts(
 
     comparison = build_comparison_summary(original_part, alternative_part)
 
-    if not comparison["same_compatibility_group"]:
-        compatibility_reason = "These parts are not in the same compatibility group"
-    else:
-        compatibility_reason = "These parts belong to the same compatibility group"
+    compatibility_reason = (
+        "These parts belong to the same compatibility group"
+        if comparison["same_compatibility_group"]
+        else "These parts are not in the same compatibility group"
+    )
 
     scores = compute_pair_scores(db, original_part, alternative_part)
 
-    explanation = build_explanation(
-        query_part=original_part,
-        candidate_part=alternative_part,
-        vector_similarity_score=scores["hybrid_score"]
-    )
+    explanation = []
+    if comparison["same_category"]:
+        explanation.append("Same category matched")
+    if comparison["same_compatibility_group"]:
+        explanation.append("Same compatibility group matched")
+    if comparison["same_name"]:
+        explanation.append("Exact part name matched")
+    if scores["similarity_percentage"] >= 70:
+        explanation.append("Text/spec similarity is high")
 
     return {
         "original_part": serialize_part(original_part),

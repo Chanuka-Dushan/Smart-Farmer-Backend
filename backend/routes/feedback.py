@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from db_session import SessionLocal
 from models.part import Part
 from models.research import FeedbackEvent
-from models.schemas import FeedbackCreate   # ✅ correct import
+from models.schemas import FeedbackCreate
 from utils.feedback_service import get_feedback_score
 
 router = APIRouter(
@@ -31,13 +31,31 @@ def create_feedback(
         raise HTTPException(status_code=404, detail="Query part not found")
 
     # Check recommended part exists
-    recommended_part = db.query(Part).filter(Part.id == payload.recommended_part_id).first()
+    recommended_part = db.query(Part).filter(
+        Part.id == payload.recommended_part_id
+    ).first()
     if not recommended_part:
         raise HTTPException(status_code=404, detail="Recommended part not found")
 
     # Prevent same-part feedback
     if payload.part_id == payload.recommended_part_id:
-        raise HTTPException(status_code=400, detail="part_id and recommended_part_id cannot be the same")
+        raise HTTPException(
+            status_code=400,
+            detail="part_id and recommended_part_id cannot be the same"
+        )
+
+    # Prevent duplicate feedback from same user for same recommendation
+    existing_feedback = db.query(FeedbackEvent).filter(
+        FeedbackEvent.user_id == payload.user_id,
+        FeedbackEvent.part_id == payload.part_id,
+        FeedbackEvent.recommended_part_id == payload.recommended_part_id
+    ).first()
+
+    if existing_feedback:
+        raise HTTPException(
+            status_code=400,
+            detail="You already submitted feedback for this recommendation"
+        )
 
     feedback_event = FeedbackEvent(
         user_id=payload.user_id,
@@ -59,6 +77,7 @@ def create_feedback(
         "feedback": feedback_event.feedback,
         "timestamp": feedback_event.timestamp
     }
+
 
 @router.get("/feedback-score")
 def read_feedback_score(

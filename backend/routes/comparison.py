@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from db_session import SessionLocal
-from utils.vectorizer.comparison_service import compare_parts
+from utils.vectorizer.comparison_service import compare_parts as compare_parts_service
 
 router = APIRouter(tags=["Comparison"])
 
@@ -22,7 +22,7 @@ def compare_parts_endpoint(
     db: Session = Depends(get_db)
 ):
     try:
-        return compare_parts(
+        return compare_parts_service(
             db=db,
             original_part_id=original_part_id,
             alternative_part_id=alternative_part_id
