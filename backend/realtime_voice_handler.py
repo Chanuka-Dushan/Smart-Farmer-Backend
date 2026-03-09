@@ -101,16 +101,18 @@ Important:
 """
 
             # Configure session with voice settings
+            # CRITICAL: Audio modality MUST come first to force audio output
             session_config = {
                 "type": "session.update",
                 "session": {
-                    "modalities": ["text", "audio"],
+                    "modalities": ["audio", "text"],  # AUDIO FIRST!
                     "instructions": instructions,
                     "voice": "alloy",
                     "input_audio_format": "pcm16",
                     "output_audio_format": "pcm16",
                     "input_audio_transcription": {
-                        "model": "whisper-1"
+                        "model": "whisper-1",
+                        "language": "si" if language == "si" else "en"  # Explicit language hint
                     },
                     "turn_detection": None,
                     "temperature": 0.8,
