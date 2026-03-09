@@ -394,7 +394,18 @@ Important:
             # Configure the session
             await self.configure_session(openai_ws, damage_info, language)
             
-            # Send initial greeting immediately
+            # Notify client that session is ready FIRST
+            await client_ws.send_json({
+                "type": "session.ready",
+                "session_id": session_id
+            })
+            logger.info(f"✅ Sent session.ready to client: {session_id}")
+            
+            # Wait a moment for mobile client to fully process and set up listeners
+            logger.info("⏳ Waiting for client to be ready...")
+            await asyncio.sleep(0.5)
+            
+            # Send initial greeting
             logger.info("🎤 Sending initial AI greeting...")
             await self.send_greeting(openai_ws, damage_info, language)
             
