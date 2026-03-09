@@ -42,17 +42,25 @@ class QRVerifyRequest(BaseModel):
 # ==========================================
 
 @router.post("/register")
-
 def register_blockchain(data: dict):
 
     try:
+
+        serial = data["serialNumber"]
+
+        # 🔴 CHECK METADATA FIRST
+        metadata = get_part_metadata(serial)
+
+        if not metadata:
+            raise HTTPException(
+                status_code=400,
+                detail="Metadata must be registered first"
+            )
 
         # Register part in blockchain
         result = register_part(data)
 
         tx_hash = result["tx_hash"]
-
-        serial = data["serialNumber"]
 
         # Update DB with blockchain tx hash
         update_blockchain_registration(serial, tx_hash)
@@ -71,7 +79,6 @@ def register_blockchain(data: dict):
             status_code=500,
             detail=str(e)
         )
-
 
 # ==========================================
 # VERIFY PART FROM BLOCKCHAIN

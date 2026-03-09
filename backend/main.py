@@ -33,7 +33,24 @@ import json
 from routes.blockchain_routes import router as blockchain_routes
 from routes.parts_routes import router as parts_routes
 from routes.transfer_routes import router as transfer_routes
+from routes.vector_admin import router as vector_admin_router
+from routes.recommender import router as recommender_router
+from routes.search import router as search_router
+from routes.comparison import router as comparison_router 
+from routes import feedback
+from routes.comparison import router as comparison_router 
+from routes.part_routes import router as part_router
+from ml_utils import ImagePreprocessor, PredictionValidator, clip_prediction
 
+
+# ===== AI capability flags =====
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+
+DISABLE_PART_IDENTIFICATION = False
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
