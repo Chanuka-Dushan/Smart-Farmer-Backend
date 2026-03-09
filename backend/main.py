@@ -51,6 +51,7 @@ from routes.vector_admin import router as vector_admin_router
 from routes.recommender import router as recommender_router
 from routes.search import router as search_router
 from routes.comparison import router as comparison_router
+from routes import feedback
 
 from routes import blockchain_routes
 
@@ -844,6 +845,7 @@ app.include_router(vector_admin_router)
 app.include_router(recommender_router)
 app.include_router(search_router)
 app.include_router(comparison_router)
+app.include_router(feedback.router)
 
 # --- AI Knowledge Integration ---
 try:

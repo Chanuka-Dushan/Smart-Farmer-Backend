@@ -21,10 +21,16 @@ def get_db():
 def get_recommendations(
     part_id: int,
     top_k: int = Query(5, ge=1, le=20),
+    mode: str = Query("normal", pattern="^(normal|before_after)$"),
     db: Session = Depends(get_db)
 ):
     try:
-        return recommend_parts(db=db, part_id=part_id, top_k=top_k)
+        return recommend_parts(
+            db=db,
+            part_id=part_id,
+            top_k=top_k,
+            mode=mode
+        )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

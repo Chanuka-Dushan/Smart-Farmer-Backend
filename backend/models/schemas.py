@@ -253,3 +253,26 @@ class PartResponse(PartBase):
     id: int
 
     model_config = ConfigDict(from_attributes=True)
+
+
+from pydantic import BaseModel, field_validator
+
+
+from pydantic import BaseModel, field_validator
+
+
+class FeedbackCreate(BaseModel):
+    user_id: str
+    part_id: int
+    recommended_part_id: int
+    feedback: str
+
+    @field_validator("feedback")
+    @classmethod
+    def validate_feedback(cls, value: str) -> str:
+        value = value.strip().lower()
+
+        if value not in ["accept", "reject"]:
+            raise ValueError("feedback must be 'accept' or 'reject'")
+
+        return value

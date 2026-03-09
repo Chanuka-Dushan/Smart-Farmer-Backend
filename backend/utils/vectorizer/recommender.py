@@ -12,14 +12,7 @@ sys.path.append(
 
 from models.part import Part
 from utils.vectorizer.vector_cache import get_part_vector, get_vectors_by_part_ids
-
-
-def get_feedback_score(query_part_id: int, candidate_part_id: int, db: Session) -> float:
-    """
-    Placeholder for future feedback learning.
-    For now always return 0.0
-    """
-    return 0.0
+from utils.feedback_service import get_feedback_score
 
 
 def filter_candidate_parts(db: Session, query_part: Part) -> List[Part]:
@@ -39,7 +32,12 @@ def filter_candidate_parts(db: Session, query_part: Part) -> List[Part]:
     return candidates
 
 
-def build_explanation(query_part: Part, candidate_part: Part, vector_similarity_score: float) -> List[str]:
+def build_explanation(
+    query_part: Part,
+    candidate_part: Part,
+    vector_similarity_score: float,
+    feedback_score: float
+) -> List[str]:
     explanation = []
 
     if query_part.category == candidate_part.category:
@@ -48,7 +46,9 @@ def build_explanation(query_part: Part, candidate_part: Part, vector_similarity_
     if query_part.compatibility_group == candidate_part.compatibility_group:
         explanation.append("Same compatibility group matched")
 
-    # Strong item-level clue
+    if query_part.machine_model == candidate_part.machine_model:
+        explanation.append("Same machine model matched")
+
     if query_part.name and candidate_part.name:
         if query_part.name.strip().lower() == candidate_part.name.strip().lower():
             explanation.append("Exact part name matched")
@@ -66,12 +66,22 @@ def build_explanation(query_part: Part, candidate_part: Part, vector_similarity_
     except Exception:
         pass
 
-    explanation.append("Feedback learning contribution currently set to 0.0")
+    if feedback_score > 0.60:
+        explanation.append("Positive feedback history")
+    elif feedback_score < 0.40:
+        explanation.append("Negative feedback history")
+    else:
+        explanation.append("Neutral or limited feedback history")
 
     return explanation
 
 
-def recommend_parts(db: Session, part_id: int, top_k: int = 5) -> Dict[str, Any]:
+def recommend_parts(
+    db: Session,
+    part_id: int,
+    top_k: int = 5,
+    mode: str = "normal"
+) -> Dict[str, Any]:
     """
     Main recommendation pipeline:
     1. Fetch query part
@@ -79,10 +89,14 @@ def recommend_parts(db: Session, part_id: int, top_k: int = 5) -> Dict[str, Any]
     3. Fetch cached vectors
     4. Compute cosine similarity
     5. hybrid_score = vector_similarity
-    6. feedback_score = 0.0
+    6. feedback_score = get_feedback_score(...)
     7. final_score = 0.90 * hybrid_score + 0.10 * feedback_score
     8. Rank by final score
+
+    mode="normal"       -> returns final ranked recommendations
+    mode="before_after" -> returns rankings before and after feedback
     """
+
     # Step 1 - get query part
     query_part = db.query(Part).filter(Part.id == part_id).first()
     if not query_part:
@@ -107,7 +121,9 @@ def recommend_parts(db: Session, part_id: int, top_k: int = 5) -> Dict[str, Any]
     candidate_ids = [candidate.id for candidate in candidates]
     candidate_vectors_map = get_vectors_by_part_ids(db, candidate_ids)
 
-    results = []
+    before_results = []
+    after_results = []
+
     query_vector_np = np.array(query_vector).reshape(1, -1)
 
     # Step 5 - compute scores
@@ -124,22 +140,35 @@ def recommend_parts(db: Session, part_id: int, top_k: int = 5) -> Dict[str, Any]
             cosine_similarity(query_vector_np, candidate_vector_np)[0][0]
         )
 
-        # Current hybrid score choice
+        # current hybrid score = vector similarity
         hybrid_score = vector_similarity_score
 
-        # Future-ready feedback placeholder
-        feedback_score = get_feedback_score(query_part.id, candidate.id, db)
+        # real feedback score from feedback_events
+        feedback_score = get_feedback_score(db, query_part.id, candidate.id)
 
-        # Final score formula
+        # final adaptive score
         final_score = 0.90 * hybrid_score + 0.10 * feedback_score
 
         explanation = build_explanation(
             query_part=query_part,
             candidate_part=candidate,
-            vector_similarity_score=vector_similarity_score
+            vector_similarity_score=vector_similarity_score,
+            feedback_score=feedback_score
         )
 
-        results.append({
+        # before feedback ranking
+        before_results.append({
+            "recommended_part": candidate.id,
+            "name": candidate.name,
+            "category": candidate.category,
+            "machine_model": candidate.machine_model,
+            "compatibility_group": candidate.compatibility_group,
+            "hybrid_score": round(hybrid_score, 4),
+            "similarity_percentage": round(hybrid_score * 100, 2)
+        })
+
+        # after feedback ranking
+        after_results.append({
             "recommended_part": candidate.id,
             "name": candidate.name,
             "category": candidate.category,
@@ -152,8 +181,25 @@ def recommend_parts(db: Session, part_id: int, top_k: int = 5) -> Dict[str, Any]
             "explanation": explanation
         })
 
-    # Step 6 - rank by final score
-    results.sort(key=lambda x: x["final_score"], reverse=True)
+    # sort before feedback by hybrid score only
+    before_results.sort(key=lambda x: x["hybrid_score"], reverse=True)
+
+    # sort after feedback by final adaptive score
+    after_results.sort(key=lambda x: x["final_score"], reverse=True)
+
+    if mode == "before_after":
+        return {
+            "query_part": {
+                "id": query_part.id,
+                "name": query_part.name,
+                "category": query_part.category,
+                "machine_model": query_part.machine_model,
+                "compatibility_group": query_part.compatibility_group
+            },
+            "total_candidates": len(candidates),
+            "before_feedback": before_results[:top_k],
+            "after_feedback": after_results[:top_k]
+        }
 
     return {
         "query_part": {
@@ -164,5 +210,5 @@ def recommend_parts(db: Session, part_id: int, top_k: int = 5) -> Dict[str, Any]
             "compatibility_group": query_part.compatibility_group
         },
         "total_candidates": len(candidates),
-        "recommendations": results[:top_k]
+        "recommendations": after_results[:top_k]
     }
