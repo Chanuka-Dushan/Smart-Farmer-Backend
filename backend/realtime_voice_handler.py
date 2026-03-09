@@ -136,20 +136,14 @@ Important:
     ):
         """
         Send initial AI greeting to start the conversation
+        Sends a simple user message to trigger the AI's greeting based on system instructions
         """
         try:
-            language_name = "Sinhala" if language == "si" else "English"
-            damage_type_clean = damage_info['damage_type'].replace('_', ' ').replace('1', '').replace('2', '').strip()
-            damage_details = f"{damage_type_clean} with {damage_info['severity']} severity"
+            # Simple user message to trigger conversation start
+            # The AI will respond based on the system instructions
+            greeting_trigger = "Hello" if language == "en" else "හෙලෝ"
             
-            greeting_text = (
-                f"Greet the user warmly in {language_name}. "
-                f"Tell them you have analyzed the tyre and detected {damage_details}. "
-                f"Ask them how many hours per week they typically use the tractor so you can estimate the remaining life. "
-                f"Keep it very brief and conversational (max 2 sentences). Respond ONLY in {language_name}."
-            )
-            
-            # Add greeting message to conversation
+            # Add user message to conversation
             greeting_item = {
                 "type": "conversation.item.create",
                 "item": {
@@ -158,22 +152,34 @@ Important:
                     "content": [
                         {
                             "type": "input_text",
-                            "text": greeting_text
+                            "text": greeting_trigger
                         }
                     ]
                 }
             }
             
-            logger.info("📤 Sending greeting conversation item...")
+            logger.info("📤 Sending greeting trigger to OpenAI...")
+            logger.error(f"📤 [DEBUG] Sending greeting trigger: '{greeting_trigger}'")
             await openai_ws.send(json.dumps(greeting_item))
             
-            # Trigger AI response with audio
+            # Trigger AI response with EXPLICIT audio modality
             response_event = {
                 "type": "response.create",
                 "response": {
-                    "modalities": ["text", "audio"]
+                    "modalities": ["text", "audio"],
+                    "instructions": "Respond with voice. Start by greeting the user warmly and mentioning the tyre damage you detected. Ask about their usage patterns. Keep it brief (2 sentences max)."
                 }
             }
+            
+            logger.info("📤 Triggering AI audio response...")
+            logger.error("📤 [DEBUG] Triggering response with audio modality")
+            await openai_ws.send(json.dumps(response_event))
+            logger.info("✅ Greeting successfully sent to OpenAI")
+            logger.error("✅ [DEBUG] Waiting for audio response...")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to send greeting: {e}", exc_info=True)
+            raise
             
             logger.info("📤 Triggering AI response with audio...")
             await openai_ws.send(json.dumps(response_event))
