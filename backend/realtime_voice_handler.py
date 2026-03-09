@@ -285,8 +285,32 @@ Important:
                     
                     # Handle different event types
                     if event_type == "session.created":
-                        logger.info("✅ OpenAI session created (session.ready already sent proactively)")
-                        # session.ready is sent proactively in handle_voice_session
+                        logger.info("✅ OpenAI session created - sending session.ready to client")
+                        
+                        # Now OpenAI is ready, notify mobile client
+                        await client_ws.send_json({
+                            "type": "session.ready",
+                            "session_id": session_id
+                        })
+                        
+                        # Mark as ready in session info
+                        if session_id in self.sessions:
+                            self.sessions[session_id]["ready_sent"] = True
+                        
+                        # Wait a moment for mobile client to process
+                        await asyncio.sleep(0.3)
+                        
+                        # Send greeting if not already sent
+                        if session_id in self.sessions and not self.sessions[session_id].get("greeting_sent"):
+                            logger.info("🎤 Sending initial AI greeting...")
+                            self.sessions[session_id]["greeting_sent"] = True
+                            try:
+                                # Get damage_info from session
+                                damage_info = self.sessions[session_id]["damage_info"]
+                                language = self.sessions[session_id]["language"]
+                                await self.send_greeting(openai_ws, damage_info, language)
+                            except Exception as e:
+                                logger.error(f"❌ Failed to send greeting: {e}")
                         
                     elif event_type == "session.updated":
                         logger.info("✅ OpenAI session updated")
@@ -389,28 +413,15 @@ Important:
             # Configure the session
             await self.configure_session(openai_ws, damage_info, language)
             
-            # Notify client that session is ready FIRST
-            await client_ws.send_json({
-                "type": "session.ready",
-                "session_id": session_id
-            })
-            logger.info(f"✅ Sent session.ready to client: {session_id}")
-            
-            # Wait a moment for mobile client to fully process and set up listeners
-            logger.info("⏳ Waiting for client to be ready...")
-            await asyncio.sleep(0.5)
-            
-            # Send initial greeting
-            logger.info("🎤 Sending initial AI greeting...")
-            await self.send_greeting(openai_ws, damage_info, language)
-            
-            # Store session info
+            # Store session info before starting handlers
             self.sessions[session_id] = {
                 "client_ws": client_ws,
                 "openai_ws": openai_ws,
                 "damage_info": damage_info,
                 "language": language,
-                "started_at": datetime.now().isoformat()
+                "started_at": datetime.now().isoformat(),
+                "ready_sent": False,  # Track if we've sent session.ready
+                "greeting_sent": False  # Track if we've sent greeting
             }
             
             # Run bidirectional streaming
