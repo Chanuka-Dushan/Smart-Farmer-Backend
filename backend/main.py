@@ -1839,6 +1839,13 @@ async def identify_part(image: UploadFile = File(...), db: Session = Depends(get
     """
     logger.info(f"📸 Part identification request: {image.filename} ({image.content_type})")
 
+    # Import ML utilities
+    try:
+        from ml_utils import ImagePreprocessor
+    except ImportError as e:
+        logger.error(f"Failed to import ML utilities: {e}")
+        raise HTTPException(status_code=500, detail="ML utilities not available")
+
     # Read the uploaded image
     img_data = await image.read()
 
