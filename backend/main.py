@@ -1,13 +1,18 @@
 import os
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form
+from typing import Optional, List, Dict
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from pydantic import BaseModel
+from models.schemas import PartCreate, PartResponse, PartUpdate
+from models.part import Part
+
 from sqlalchemy import create_engine, Column, String, Integer, Boolean, Text, DateTime, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -19,14 +24,7 @@ from sqlalchemy import Integer, Boolean, Text, DateTime
 import shutil
 from pathlib import Path
 import logging
-try:
-    import tensorflow as tf
-    import numpy as np
-    tensorflow_available = True
-    print("✓ TensorFlow available")
-except ImportError as e:
-    tensorflow_available = False
-    print(f"⚠ TensorFlow not available: {e}")
+import numpy as np
 from io import BytesIO
 from PIL import Image
 import requests
@@ -40,6 +38,84 @@ from routes.transfer_routes import router as transfer_routes
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# [BANNER] Verify this appears in Digital Ocean logs!
+print("\n" + "="*80)
+print("🚀 SMART FARMER BACKEND [FORCE-SYNC-V3-MAR08]")
+print("🛠️  STATUS: REBUILD TRIGGERED")
+print("="*80 + "\n")
+
+# Tyre Health System imports (import after logger is configured)
+TYRE_SYSTEM_AVAILABLE = False
+get_tyre_detector = None
+get_tyre_assistant = None
+get_tyre_predictor = None
+get_voice_handler = None  # Realtime voice handler
+
+# CRITICAL: Fix OpenCV before importing tyre modules
+# Check OpenCV installation at startup
+try:
+    logger.info("🔍 Checking OpenCV installation...")
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, "-c", "import sys; [print(p) for p in sys.path if 'opencv' in p.lower()]"],
+        capture_output=True,
+        text=True,
+        timeout=5
+    )
+    
+    # List installed opencv packages
+    pip_result = subprocess.run(
+        [sys.executable, "-m", "pip", "list"],
+        capture_output=True,
+        text=True,
+        timeout=10
+    )
+    opencv_packages = [line for line in pip_result.stdout.split('\n') if 'opencv' in line.lower()]
+    if opencv_packages:
+        logger.info(f"📦 Installed OpenCV packages:")
+        for pkg in opencv_packages:
+            logger.info(f"   {pkg}")
+            if 'opencv-python ' in pkg and 'headless' not in pkg:
+                logger.error(f"❌ CRITICAL: GUI opencv-python detected: {pkg}")
+                logger.error("❌ This will cause libGL.so.1 errors!")
+    else:
+        logger.warning("⚠️  No OpenCV packages found!")
+        
+except Exception as e:
+    logger.warning(f"⚠️  OpenCV check failed: {e}")
+
+# Run opencv preload fix
+try:
+    logger.info("🔧 Running OpenCV preload fix...")
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, os.path.join(os.path.dirname(__file__), 'fix_opencv_preload.py')],
+        capture_output=True,
+        text=True,
+        timeout=30
+    )
+    if result.returncode == 0:
+        logger.info("✅ OpenCV preload fix completed")
+        if result.stdout:
+            logger.info(result.stdout)
+    else:
+        logger.warning(f"⚠️  OpenCV preload fix had issues: {result.stderr}")
+except Exception as e:
+    logger.warning(f"⚠️  Could not run OpenCV preload fix: {e}")
+
+try:
+    from tyre_damage_detector import get_detector as get_tyre_detector
+    from tyre_ai_assistant import get_assistant as get_tyre_assistant
+    from tyre_life_predictor import get_predictor as get_tyre_predictor
+    from realtime_voice_handler import get_voice_handler
+    TYRE_SYSTEM_AVAILABLE = True
+    logger.info("✓ Tyre Health System available")
+except ImportError as e:
+    logger.error(f"❌ Tyre Health System import failed: {e}")
+    logger.error("Please install: pip install ultralytics>=8.0.0 openai>=1.0.0 opencv-python-headless>=4.8.0 websockets>=12.0")
+except Exception as e:
+    logger.error(f"❌ Tyre Health System initialization error: {e}", exc_info=True)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -136,7 +212,8 @@ connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+from db_base import Base
+
 
 # --- 2. Database Models (The Tables) ---
 class User(Base):
@@ -235,23 +312,6 @@ class SparePartOffer(Base):
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
-class Part(Base):
-    """Spare Part Master Model (Phase 1 – Data Foundation)"""
-    __tablename__ = "parts"
-
-    id = Column(Integer, primary_key=True, index=True)
-
-    name = Column(String(255), nullable=False)
-    brand = Column(String(255), nullable=False)
-    description = Column(String(255), nullable=False)
-    category = Column(String(200),nullable=False)
-
-    diameter = Column(Float, nullable=True)
-    material = Column(String(255), nullable=True)
-
-    price = Column(Float, nullable=False)
-    lifespan = Column(Integer, nullable=True) # lifespan in hours / months
-    image_url = Column(String(500), nullable=True)
 
 
 class Payment(Base):
@@ -290,6 +350,8 @@ class SavedPaymentMethod(Base):
     updated_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
 
 # Create the tables automatically
+from models.research import CompatibilityLabel, FeedbackEvent, SalesTransaction, InventoryStock
+from models.part_vector import PartVector
 Base.metadata.create_all(bind=engine)
 
 # --- 3. Pydantic Models (Input Validation) ---
@@ -551,51 +613,44 @@ class NotificationResponse(BaseModel):
     class Config:
         from_attributes = True
 
-        # Parts Models - compatibility
+       
 
-class PartCreate(BaseModel):
-    name: str
-    brand: str
-    description: str
-    category: str
-    diameter: Optional[float] = None
-    material: Optional[str] = None
-    price: float
-    lifespan: Optional[int] = None
-    image_url: Optional[str] = None
+# Tyre Health Schemas
+class TyreDamageDetectionResponse(BaseModel):
+    success: bool
+    image_path: str
+    detections_count: int
+    detections: List[Dict]
+    primary_damage: Optional[Dict]
+    annotated_image_path: Optional[str]
+    model: str
+    timestamp: str
 
+class VoiceChatRequest(BaseModel):
+    session_id: str
+    message: str
 
-class PartResponse(BaseModel):
-    id: int
-    name: str
-    brand: str
-    description: str
-    category: str
-    diameter: Optional[float]
-    material: Optional[str]
-    price: float
-    lifespan: Optional[int]
-    image_url: Optional[str] = None
+class VoiceChatStartRequest(BaseModel):
+    damage_type: str
+    confidence: float
+    severity: str
+    lifespan_reduction: float
+    language: str = "si"  # Default to Sinhala
 
-    class Config:
-        orm_mode = True
+class VoiceChatResponse(BaseModel):
+    session_id: str
+    message: str
+    state: str
+    prediction: Optional[Dict] = None
 
-
-class PartUpdate(BaseModel):
-    name: Optional[str] = None
-    brand: Optional[str] = None
-    description: Optional[str] = None
-    category: Optional[str] = None
-    diameter: Optional[float] = None
-    material: Optional[str] = None
-    price: Optional[float] = None
-    lifespan: Optional[int] = None
-    image_url: Optional[str] = None
-
-
-
-    class Config:
-        from_attributes = True
+class TyreLifePredictionRequest(BaseModel):
+    damage_type: str
+    damage_severity: str
+    lifespan_reduction: float
+    usage_hours_per_week: float
+    months_used: float
+    tyre_type: str = "default"
+    confidence: float = 0.8
 
 # --- 4. Database Dependency ---
 def get_db():
@@ -853,9 +908,16 @@ app.add_middleware(
 )
 
 
-from routes.recommendation import router as recommendation_router
+#from routes.recommendation import router as recommendation_router
 
-app.include_router(recommendation_router)
+#app.include_router(recommendation_router)
+
+app.include_router(vector_admin_router)
+app.include_router(recommender_router)
+app.include_router(search_router)
+app.include_router(comparison_router)
+app.include_router(feedback.router)
+app.include_router(part_router)
 
 app.include_router(blockchain_routes)
 app.include_router(parts_routes)
@@ -876,82 +938,30 @@ WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 if not WEATHER_API_KEY:
     logger.warning("⚠️ WEATHER_API_KEY not set - weather forecasting will be disabled")
 
-# --- Vision# Model Configuration
-MODEL_VERSION = os.getenv("MODEL_VERSION", "v1.0")
-MODEL_PATH = os.getenv("MODEL_PATH", "smart_farmer_vision_v1.h5")  # Fixed: removed models/ prefix
+# Initialize machine learning utilities
 MIN_PREDICTION_CONFIDENCE = float(os.getenv("MIN_PREDICTION_CONFIDENCE", "0.7"))
+image_preprocessor = ImagePreprocessor(target_size=(224, 224))
+prediction_validator = PredictionValidator(min_confidence=MIN_PREDICTION_CONFIDENCE)
 
-# Check if we should disable TensorFlow in production (for performance)
-# Only disable if explicitly set via environment variable
-# But also disable automatically in production environments for reliability
-DISABLE_TENSORFLOW = (
-    os.getenv("DISABLE_TENSORFLOW", "false").lower() == "true" or
-    os.getenv("DYNO") is not None or  # Heroku
-    os.getenv("RENDER") is not None or  # Render
-    os.getenv("RAILWAY_ENVIRONMENT") is not None  # Railway
-)
+print("✓ ML utilities initialized (TensorFlow removed - using Ultralytics for vision)")
 
-print(f"🔧 TensorFlow disabled: {DISABLE_TENSORFLOW}")
-
-def download_model_from_spaces():
-    """Download ML model from DigitalOcean Spaces if not present locally"""
-    import requests
-    from pathlib import Path
-    
-    # Check if model already exists
-    if Path(MODEL_PATH).exists():
-        logger.info(f"✓ Model already exists locally: {MODEL_PATH}")
-        return True
-    
-    # Check if MODEL_URL is set
-    model_url = os.getenv("MODEL_URL")
-    if not model_url:
-        logger.warning("⚠️ MODEL_URL not set - cannot download model from Spaces")
-        return False
-    
+# --- Part Identification Model (PyTorch) ---
+part_identifier = None
+if TORCH_AVAILABLE and not DISABLE_PART_IDENTIFICATION:
     try:
-        logger.info(f"📥 Downloading model from Spaces: {model_url}")
-        
-        # Create models directory if needed
-        Path(MODEL_PATH).parent.mkdir(parents=True, exist_ok=True)
-        
-        # Download model
-        response = requests.get(model_url, timeout=60)
-        response.raise_for_status()
-        
-        # Save model
-        with open(MODEL_PATH, 'wb') as f:
-            f.write(response.content)
-        
-        file_size = Path(MODEL_PATH).stat().st_size / 1024 / 1024
-        logger.info(f"✅ Model downloaded successfully ({file_size:.2f} MB)")
-        return True
-        
+        part_identifier = PartIdentifier(PART_MODEL_PATH, PART_LABEL_PATH)
+        if part_identifier.load_model():
+            logger.info(f"✓ Part identification model loaded: {PART_MODEL_PATH}")
+        else:
+            part_identifier = None
     except Exception as e:
-        logger.error(f"❌ Failed to download model: {e}")
-        return False
-
-# Try to download model from Spaces if not present
-if not DISABLE_TENSORFLOW and tensorflow_available:
-    download_model_from_spaces()
-
-# Load Vision Model
-cnn_model = None
-if tensorflow_available and not DISABLE_TENSORFLOW:
-    try:
-        # Disable TensorFlow warnings and optimize for production
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TensorFlow logging
-        os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN optimizations that cause warnings
-
-        cnn_model = tf.keras.models.load_model(MODEL_PATH)
-        logger.info(f"✓ Vision Model Loaded: {MODEL_PATH}")
-    except Exception as e:
-        cnn_model = None
-        print(f"⚠️ Vision Model Not Found ({e}). Using Simulation Mode.")
-elif DISABLE_TENSORFLOW:
-    print("⚠️ TensorFlow disabled for production performance. Using Simulation Mode.")
+        part_identifier = None
+        logger.warning(f"Part identification model not loaded: {e}")
 else:
-    print("⚠️ TensorFlow not available. Using Simulation Mode for vision analysis.")
+    if DISABLE_PART_IDENTIFICATION:
+        logger.info("⚠️ Part identification disabled by configuration")
+    else:
+        logger.info("⚠️ PyTorch not available: part identification disabled")
 
 # --- Historical Stress Engine ---
 def get_historical_stress_factor(location: str, part_name: str):
@@ -1078,58 +1088,78 @@ async def predict_lifecycle(
             logger.warning(f"⚠️ Image validation failed: {validation_message}")
             raise HTTPException(status_code=400, detail=f"Invalid image: {validation_message}")
         
-        if cnn_model and tensorflow_available:
+        # Check if this is a tyre - use tyre damage detection system
+        part_lower = part_name.lower()
+        is_tyre = any(keyword in part_lower for keyword in ['tyre', 'tire', 'wheel'])
+        
+        if is_tyre and TYRE_SYSTEM_AVAILABLE:
             try:
-                # Preprocess image
-                img_array = image_preprocessor.preprocess_image(img_data)
-                if img_array is None:
-                    raise ValueError("Image preprocessing failed")
+                # Save image temporarily for tyre analysis
+                temp_dir = Path("temp") / "lifecycle_tyres"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                temp_path = temp_dir / f"tyre_{timestamp}.jpg"
                 
-                # Predict
-                prediction = cnn_model.predict(img_array, verbose=0)
-                raw_prediction = float(prediction[0][0])
+                with open(temp_path, "wb") as f:
+                    f.write(img_data)
                 
-                # Clip to valid range
-                visual_damage = clip_prediction(raw_prediction, 0.0, 1.0)
+                # Use tyre damage detector
+                detector = get_tyre_detector()
+                result = detector.detect_damage(str(temp_path), confidence_threshold=0.25, save_annotated=False)
                 
-                # Calculate confidence
-                confidence = prediction_validator.calculate_confidence(visual_damage)
+                if result.get("success") and result.get("detections_count", 0) > 0:
+                    # Extract damage from tyre detection
+                    primary_damage = result.get("primary_damage")
+                    if primary_damage:
+                        severity = primary_damage.get("severity", "minor")
+                        damage_type = primary_damage.get("damage_type", "unknown")
+                        detection_confidence = primary_damage.get("confidence", 0.5)
+                        
+                        # Map severity to damage percentage
+                        severity_map = {
+                            "minor": 0.25,      # 25% damage
+                            "moderate": 0.50,   # 50% damage
+                            "severe": 0.75      # 75% damage
+                        }
+                        visual_damage = severity_map.get(severity, 0.35)
+                        confidence = detection_confidence
+                        analysis_model = f"YOLOv8 Detection - {damage_type} ({severity})"
+                        logger.info(f"🚗 Tyre damage detected: {severity} - {int(visual_damage*100)}% damage")
+                    else:
+                        visual_damage = 0.10  # Minimal damage if no issues detected
+                        confidence = 0.8
+                        analysis_model = "YOLOv8 - No damage detected"
+                else:
+                    # No damage detected or detection failed
+                    visual_damage = 0.10
+                    confidence = 0.7
+                    analysis_model = "YOLOv8 - Clean tyre"
                 
-                # Validate prediction
-                is_valid, validation_msg = prediction_validator.validate_prediction(
-                    visual_damage, 
-                    confidence
-                )
-                
-                if not is_valid:
-                    logger.warning(f"⚠️ Prediction validation warning: {validation_msg}")
-                    # Continue but flag for review
-                
-                analysis_model = f"MobileNetV2 (Transfer Learning) - Confidence: {confidence:.2%}"
-                logger.info(f"👁️ Vision Model: {int(visual_damage * 100)}% Damage (Confidence: {confidence:.2%})")
-                
-                # Log prediction for monitoring
-                prediction_validator.log_prediction({
-                    "part_name": part_name,
-                    "prediction": visual_damage,
-                    "confidence": confidence,
-                    "raw_prediction": raw_prediction,
-                    "location": location
-                })
-                
+                # Cleanup temp file
+                try:
+                    temp_path.unlink()
+                except:
+                    pass
+                    
             except Exception as e:
-                logger.error(f"❌ Vision model prediction failed: {e}")
+                logger.error(f"❌ Tyre damage detection failed: {e}")
                 # Fall back to simulation
                 visual_damage = 0.35
                 confidence = 0.5
-                analysis_model = "Simulation Mode (Model Error)"
-                logger.warning("⚠️ Using simulation mode due to model error")
+                analysis_model = "Simulation Mode (Tyre detection error)"
         else:
-            # Fallback if TensorFlow not available or model not loaded
-            logger.info("⚠️ Vision analysis unavailable. Using simulation mode.")
-            visual_damage = 0.35
+            # For non-tyre parts or if tyre system unavailable, use simulation mode
+            # Generate realistic damage based on usage
+            if usage_hours_value > 0:
+                # Estimate damage from usage (rough heuristic)
+                estimated_damage = min(0.85, usage_hours_value / fresh_life * 1.2)
+                visual_damage = np.clip(estimated_damage, 0.10, 0.85)
+            else:
+                visual_damage = 0.35  # Default assumption
+            
             confidence = 0.5
-            analysis_model = "Simulation Mode"
+            analysis_model = "Simulation Mode (TensorFlow removed - use tyre detection for tyres)"
+            logger.info(f"⚠️ Using simulation mode for {part_name}: {int(visual_damage*100)}% estimated damage")
 
         # C. ANALYZE TIME (Historical + Future)
         # 1. Past Stress
@@ -1219,7 +1249,6 @@ async def predict_lifecycle(
                 "color_code": color_code
             },
             "metadata": {
-                "model_version": MODEL_VERSION,
                 "prediction_time": datetime.now(timezone.utc).isoformat(),
                 "processing_time_ms": int((datetime.now(timezone.utc) - prediction_start_time).total_seconds() * 1000)
             }
@@ -1246,6 +1275,570 @@ async def predict_lifecycle(
             status_code=500, 
             detail=f"Prediction failed: {str(e)}"
         )
+
+# ============================================================================
+# TYRE HEALTH & DAMAGE DETECTION SYSTEM (YOLOv8 + AI Assistant)
+# ============================================================================
+
+@app.post("/api/tyre/detect-damage")
+async def detect_tyre_damage(
+    image: UploadFile = File(...),
+    confidence_threshold: float = Form(0.25),
+    save_annotated: bool = Form(True)
+):
+    """
+    Detect tyre damage using YOLOv8 model
+    
+    Args:
+        image: Tyre image file
+        confidence_threshold: Minimum confidence for detection (default: 0.25)
+        save_annotated: Whether to save annotated image (default: True)
+    
+    Returns:
+        Detection results with damage type, confidence, severity, and bounding boxes
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        # Provide detailed diagnostic information
+        try:
+            import cv2
+            opencv_version = cv2.__version__
+            opencv_status = "✅ OpenCV available"
+        except ImportError as e:
+            opencv_version = "N/A"
+            opencv_status = f"❌ OpenCV failed: {str(e)}"
+        
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "Tyre detection system not available",
+                "opencv_status": opencv_status,
+                "opencv_version": opencv_version,
+                "solution": "Backend deployment in progress or OpenCV issue. Check /health endpoint.",
+                "timestamp": datetime.now().isoformat()
+            }
+        )
+    
+    try:
+        logger.info(f"🚗 Tyre damage detection request: {image.filename}")
+        
+        # Create temp directory for uploaded images
+        temp_dir = Path("temp") / "tyre_images"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save uploaded image temporarily
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_extension = Path(image.filename).suffix
+        temp_filename = f"tyre_{timestamp}{file_extension}"
+        temp_path = temp_dir / temp_filename
+        
+        with open(temp_path, "wb") as f:
+            content = await image.read()
+            f.write(content)
+        
+        logger.info(f"💾 Image saved to: {temp_path}")
+        
+        # Get detector and run detection
+        detector = get_tyre_detector()
+        result = detector.detect_damage(
+            str(temp_path),
+            confidence_threshold=confidence_threshold,
+            save_annotated=save_annotated
+        )
+        
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("error", "Detection failed")
+            )
+        
+        logger.info(f"✅ Detection complete: {result['detections_count']} damage(s) found")
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Tyre damage detection error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Detection failed: {str(e)}"
+        )
+
+
+@app.post("/api/tyre/predict-life")
+async def predict_tyre_life(request: TyreLifePredictionRequest):
+    """
+    Predict remaining tyre life based on damage and usage
+    
+    Args:
+        request: Prediction request with damage info and usage data
+    
+    Returns:
+        Prediction with remaining months, status, and recommendations
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Tyre prediction system not available"
+        )
+    
+    try:
+        logger.info(f"🔮 Tyre life prediction: {request.damage_type}")
+        
+        # Get predictor and calculate
+        predictor = get_tyre_predictor()
+        result = predictor.predict_remaining_life(
+            damage_type=request.damage_type,
+            damage_severity=request.damage_severity,
+            lifespan_reduction=request.lifespan_reduction,
+            usage_hours_per_week=request.usage_hours_per_week,
+            months_used=request.months_used,
+            tyre_type=request.tyre_type,
+            confidence=request.confidence
+        )
+        
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("error", "Prediction failed")
+            )
+        
+        logger.info(f"✅ Prediction complete: {result['prediction']['remaining_life_months']} months")
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Tyre life prediction error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Prediction failed: {str(e)}"
+        )
+
+
+@app.post("/api/tyre/voice-chat/start")
+async def start_voice_chat(request: VoiceChatStartRequest):
+    """
+    Start a conversational AI session for tyre health
+    
+    Args:
+        request: Initial damage information and language preference
+    
+    Returns:
+        Session ID and initial AI message
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Tyre AI assistant not available"
+        )
+    
+    try:
+        # Generate unique session ID
+        session_id = f"tyre_{uuid.uuid4().hex[:16]}"
+        
+        logger.info(f"💬 Starting voice chat session: {session_id}")
+        
+        # Prepare damage info
+        damage_info = {
+            "damage_type": request.damage_type,
+            "confidence": request.confidence,
+            "severity": request.severity,
+            "lifespan_reduction": request.lifespan_reduction
+        }
+        
+        # Get assistant and start conversation
+        assistant = get_tyre_assistant()
+        result = assistant.start_conversation(
+            session_id=session_id,
+            damage_info=damage_info,
+            language=request.language
+        )
+        
+        logger.info(f"✅ Chat session started: {session_id}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Voice chat start error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to start chat: {str(e)}"
+        )
+
+
+@app.post("/api/tyre/voice-chat/continue")
+async def continue_voice_chat(request: VoiceChatRequest):
+    """
+    Continue an existing voice chat conversation
+    
+    Args:
+        request: Session ID and user message (from speech-to-text)
+    
+    Returns:
+        AI response (for text-to-speech conversion)
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Tyre AI assistant not available"
+        )
+    
+    try:
+        logger.info(f"💬 Continue chat: {request.session_id}")
+        
+        # Get assistant and continue conversation
+        assistant = get_tyre_assistant()
+        result = assistant.continue_conversation(
+            session_id=request.session_id,
+            user_message=request.message
+        )
+        
+        if "error" in result:
+            raise HTTPException(
+                status_code=404,
+                detail=result["error"]
+            )
+        
+        logger.info(f"✅ Chat response generated")
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Voice chat continue error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Chat failed: {str(e)}"
+        )
+
+
+@app.get("/api/tyre/voice-chat/{session_id}/summary")
+async def get_chat_summary(session_id: str):
+    """
+    Get conversation summary and collected data
+    
+    Args:
+        session_id: Chat session ID
+    
+    Returns:
+        Conversation summary with collected usage data and prediction
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Tyre AI assistant not available"
+        )
+    
+    try:
+        logger.info(f"📊 Get chat summary: {session_id}")
+        
+        # Get assistant and retrieve summary
+        assistant = get_tyre_assistant()
+        summary = assistant.get_conversation_summary(session_id)
+        
+        if summary is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Session not found"
+            )
+        
+        return summary
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Get summary error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get summary: {str(e)}"
+        )
+
+
+@app.post("/api/tyre/voice-chat/synthesize")
+async def synthesize_speech(text: str = Form(...), language: str = Form("si")):
+    """
+    Convert text to speech (TTS)
+    
+    Args:
+        text: Text to convert to speech
+        language: Language code (si for Sinhala, en for English)
+    
+    Returns:
+        MP3 audio file
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Tyre AI assistant not available"
+        )
+    
+    try:
+        logger.info(f"🔊 Text-to-speech request: {text[:50]}... (lang: {language})")
+        
+        # Get assistant and synthesize
+        assistant = get_tyre_assistant()
+        audio_bytes = assistant.text_to_speech(text, language)
+        
+        if not audio_bytes:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate speech"
+            )
+        
+        logger.info(f"✅ Speech generated: {len(audio_bytes)} bytes")
+        
+        # Return audio file
+        return Response(
+            content=audio_bytes,
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": "attachment; filename=speech.mp3"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ TTS error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Speech synthesis failed: {str(e)}"
+        )
+
+
+@app.post("/api/tyre/voice-chat/transcribe")
+async def transcribe_speech(audio: UploadFile = File(...)):
+    """
+    Convert speech to text (STT)
+    
+    Args:
+        audio: Audio file (MP3, WAV, M4A, etc.)
+    
+    Returns:
+        Transcribed text
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Tyre AI assistant not available"
+        )
+    
+    try:
+        logger.info(f"🎤 Speech-to-text request: {audio.filename} ({audio.content_type})")
+        
+        # Read audio file
+        audio_bytes = await audio.read()
+        
+        # Get assistant and transcribe
+        assistant = get_tyre_assistant()
+        
+        # Create a file-like object for OpenAI API
+        audio_file = BytesIO(audio_bytes)
+        audio_file.name = audio.filename or "audio.mp3"
+        
+        text = assistant.speech_to_text(audio_file)
+        
+        if not text:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not transcribe audio"
+            )
+        
+        logger.info(f"✅ Transcription: {text}")
+        
+        return {"text": text}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ STT error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Speech transcription failed: {str(e)}"
+        )
+
+
+@app.websocket("/ws/tyre/voice-chat")
+async def voice_chat_websocket(
+    websocket: WebSocket,
+    damage_type: str,
+    confidence: float,
+    severity: str,
+    lifespan_reduction: float,
+    language: str = "si"
+):
+    """
+    WebSocket endpoint for OpenAI Realtime API voice streaming
+    
+    Query Parameters:
+        - damage_type: Type of damage detected (e.g., 'crack', 'treadwear')
+        - confidence: Detection confidence (0-1)
+        - severity: Severity level (e.g., 'minor', 'moderate', 'severe')
+        - lifespan_reduction: Expected lifespan reduction (0-1)
+        - language: Conversation language ('si' or 'en')
+    
+    WebSocket Protocol:
+        Client -> Server:
+            - Binary: Raw PCM16 audio at 24kHz
+            - JSON: {"type": "audio", "audio": "base64..."}
+            - JSON: {"type": "audio_commit"} - finish speaking
+            - JSON: {"type": "text", "text": "..."} - text message
+        
+        Server -> Client:
+            - JSON: {"type": "session.ready", "session_id": "..."}
+            - JSON: {"type": "audio", "audio": "base64..."} - AI speech
+            - JSON: {"type": "audio.done"} - AI finished speaking
+            - JSON: {"type": "transcript", "text": "...", "role": "user|assistant"}
+            - JSON: {"type": "error", "message": "..."}
+    
+    Example Usage:
+        ws = new WebSocket('ws://localhost:8080/ws/tyre/voice-chat?damage_type=crack&confidence=0.85&severity=moderate&lifespan_reduction=0.15&language=si')
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        await websocket.close(code=1003, reason="Tyre AI system not available")
+        return
+    
+    # Accept WebSocket connection
+    await websocket.accept()
+    logger.info(f"🎤 Voice chat WebSocket connected")
+    
+    try:
+        # Generate session ID
+        import uuid
+        session_id = str(uuid.uuid4())
+        
+        # Prepare damage information
+        damage_info = {
+            "damage_type": damage_type,
+            "confidence": confidence,
+            "severity": severity,
+            "lifespan_reduction": lifespan_reduction
+        }
+        
+        # Get voice handler
+        voice_handler = get_voice_handler()
+        if not voice_handler:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Voice service not configured"
+            })
+            await websocket.close()
+            return
+        
+        # Handle the voice session
+        await voice_handler.handle_voice_session(
+            websocket,
+            session_id,
+            damage_info,
+            language
+        )
+        
+    except WebSocketDisconnect:
+        logger.info("📱 Voice chat client disconnected")
+    except Exception as e:
+        logger.error(f"❌ Voice chat WebSocket error: {e}", exc_info=True)
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Session error: {str(e)}"
+            })
+        except:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
+
+# ============================================================================
+# END TYRE HEALTH SYSTEM
+# ============================================================================
+
+# --- Part Identification Endpoint ---
+@app.post("/api/identify-part")
+async def identify_part(image: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Accept an image and return the identified part with full DB details.
+
+    Returns top-5 predictions with part details, compatibility, and description.
+    """
+    logger.info(f"📸 Part identification request: {image.filename} ({image.content_type})")
+
+    # Read the uploaded image
+    img_data = await image.read()
+
+    # Validate and preprocess
+    pre = ImagePreprocessor(target_size=(224, 224))
+    valid, msg = pre.validate_image(img_data)
+    if not valid:
+        logger.warning(f"⚠️ Invalid image for part identification: {msg}")
+        raise HTTPException(status_code=400, detail=f"Invalid image: {msg}")
+
+    arr = pre.preprocess_image(img_data)
+    if arr is None:
+        raise HTTPException(status_code=500, detail="Image preprocessing failed")
+
+    if not part_identifier:
+        raise HTTPException(status_code=503, detail="Part identification model unavailable")
+
+    try:
+        # Get top 5 predictions ranked by confidence
+        # Now returns part_number directly (not model label)
+        predictions = part_identifier.predict(arr, top_k=5)
+        
+        # Build detailed response for each prediction
+        from models.identification import IdentificationPart, IdentificationPartCompatibility, IdentificationTractor
+        
+        results = []
+        for part_number, confidence in predictions:
+            # Query part from DB
+            part = db.query(IdentificationPart).filter(
+                IdentificationPart.part_number == part_number
+            ).first()
+            
+            if not part:
+                logger.warning(f"⚠️ Part not found in DB for part_number: {part_number}")
+                continue
+            
+            # Query compatibility tractors
+            compat_records = db.query(IdentificationTractor).join(
+                IdentificationPartCompatibility,
+                IdentificationPartCompatibility.tractor_id == IdentificationTractor.id
+            ).filter(
+                IdentificationPartCompatibility.part_id == part.id
+            ).all()
+            
+            compatibility = [t.name for t in compat_records]
+            
+            # Build response object
+            part_response = {
+                "name": part.name,
+                "partNumber": part.part_number,
+                "compatibility": compatibility,
+                "confidence": round(confidence * 100, 2),  # Convert to percentage
+                "image": part.image,
+                "description": part.description or "",
+                "model3dVideo": part.model_3d_vid or ""
+            }
+            results.append(part_response)
+        
+        if not results:
+            logger.warning("⚠️ No valid parts found for predictions")
+            raise HTTPException(status_code=404, detail="No parts found in database")
+        
+        logger.info(f"✓ Identified {len(results)} parts, top: {results[0]['name']} ({results[0]['confidence']}%)")
+        return {"predictions": results}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Part identification error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Identification error: {str(e)}")
+
 if not spaces_configured:
     logger.warning("⚠ Spaces not configured - uploads will fail")
     # Keep local directories for fallback
@@ -1324,8 +1917,25 @@ def home():
 
 @app.get("/health")
 def health():
-    """Health check endpoint for monitoring"""
-    return {"status": "healthy"}
+    """Health check endpoint with system diagnostics"""
+    voice_available = False
+    if TYRE_SYSTEM_AVAILABLE and get_voice_handler:
+        try:
+            handler = get_voice_handler()
+            voice_available = handler is not None
+        except:
+            pass
+    
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "features": {
+            "tyre_system": TYRE_SYSTEM_AVAILABLE,
+            "voice_chat": voice_available,
+            "pytorch": TORCH_AVAILABLE,
+            "stripe": stripe is not None,
+        }
+    }
 
 # REGISTRATION ENDPOINT DISABLED - ADMIN ONLY LOGIN
 # @app.post("/register")
@@ -1716,6 +2326,47 @@ async def update_seller_location(
     db.refresh(current_seller)
     
     return current_seller
+
+@app.delete("/api/sellers/me", response_model=MessageResponse)
+async def delete_seller_account(
+    current_seller: Seller = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    """Delete current seller's account and all associated data"""
+    try:
+        seller_id = current_seller.id
+        
+        # Delete all spare part offers created by this seller
+        db.query(SparePartOffer).filter(SparePartOffer.seller_id == seller_id).delete()
+        
+        # Keep payments for financial record-keeping (they'll reference a deleted seller)
+        # This is important for audit trails and accounting purposes
+        
+        # Update blockchain ownership records (nullify seller ownership)
+        db.query(BcOwnershipRecord).filter(
+            BcOwnershipRecord.current_owner_seller_id == seller_id
+        ).update({"current_owner_seller_id": None})
+        
+        # Delete notifications specifically targeted at this seller
+        db.query(Notification).filter(
+            Notification.user_type == "seller",
+            Notification.target_user_id == seller_id
+        ).delete()
+        
+        # Finally, delete the seller account
+        db.delete(current_seller)
+        db.commit()
+        
+        logger.info(f"Seller account deleted: {seller_id}")
+        return MessageResponse(message="Account deleted successfully", success=True)
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting seller account: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete account: {str(e)}"
+        )
 
 @app.get("/api/sellers/locations")
 async def get_seller_locations(
@@ -3121,15 +3772,18 @@ def create_part(
     current_admin: dict = Depends(get_current_user)  # Admin only
 ):
     """Create a new spare part (Admin only)"""
+
     new_part = Part(
         name=part_data.name,
         brand=part_data.brand,
+        machine_model=part_data.machine_model,          # ✅ IMPORTANT
         description=part_data.description,
         category=part_data.category,
         diameter=part_data.diameter,
         material=part_data.material,
         price=part_data.price,
         lifespan=part_data.lifespan,
+        specs_json=part_data.specs_json,                # ✅ IMPORTANT
         image_url=part_data.image_url
     )
 
@@ -3144,31 +3798,35 @@ def get_all_parts(db: Session = Depends(get_db)):
     """Get all spare parts"""
     return db.query(Part).all()
 
+
 @app.get("/api/parts/search-by-name")
-def search_part_by_name_and_brand(
+def search_part_by_name_and_machine_model(
     name: str,
-    brand: Optional[str] = None,
+    machine_model: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
+    """Search part by name with exact match first, then partial match fallback."""
+
     # Exact match
     query = db.query(Part).filter(Part.name.ilike(name))
 
-    if brand:
-        query = query.filter(Part.brand.ilike(brand))
+    if machine_model:
+        query = query.filter(Part.machine_model.ilike(machine_model))
 
     part = query.first()
     if part:
         return {
             "id": part.id,
             "name": part.name,
-            "brand": part.brand
+            "brand": part.brand,
+            "machine_model": part.machine_model
         }
 
     # Partial match fallback
     query = db.query(Part).filter(Part.name.ilike(f"%{name}%"))
 
-    if brand:
-        query = query.filter(Part.brand.ilike(f"%{brand}%"))
+    if machine_model:
+        query = query.filter(Part.machine_model.ilike(f"%{machine_model}%"))
 
     part = query.first()
     if not part:
@@ -3177,11 +3835,9 @@ def search_part_by_name_and_brand(
     return {
         "id": part.id,
         "name": part.name,
-        "brand": part.brand
+        "brand": part.brand,
+        "machine_model": part.machine_model
     }
-
-
-
 
 
 @app.get("/api/parts/{part_id}", response_model=PartResponse)
@@ -3192,6 +3848,7 @@ def get_part_by_id(part_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Part not found")
     return part
 
+
 @app.put("/api/parts/{part_id}", response_model=PartResponse)
 def update_part(
     part_id: int,
@@ -3200,11 +3857,14 @@ def update_part(
     current_admin: dict = Depends(get_current_user)
 ):
     """Update a spare part (Admin only)"""
+
     part = db.query(Part).filter(Part.id == part_id).first()
     if not part:
         raise HTTPException(status_code=404, detail="Part not found")
 
-    for field, value in part_data.dict(exclude_unset=True).items():
+    update_data = part_data.dict(exclude_unset=True)
+
+    for field, value in update_data.items():
         setattr(part, field, value)
 
     db.commit()
@@ -3219,6 +3879,7 @@ def delete_part(
     current_admin: dict = Depends(get_current_user)
 ):
     """Delete a spare part (Admin only)"""
+
     part = db.query(Part).filter(Part.id == part_id).first()
     if not part:
         raise HTTPException(status_code=404, detail="Part not found")
@@ -3226,8 +3887,6 @@ def delete_part(
     db.delete(part)
     db.commit()
     return MessageResponse(message="Part deleted successfully")
-
-
 
 # ============= PAYMENT ENDPOINTS =============
 
@@ -4389,5 +5048,5 @@ if __name__ == "__main__":
 
 # ============= RECOMMENDATION ROUTES (MUST BE LAST) =============
 
-from routes.recommendation import router as recommendation_router
-app.include_router(recommendation_router)
+#from routes.recommendation import router as recommendation_router
+#app.include_router(recommendation_router)

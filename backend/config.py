@@ -33,11 +33,13 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 
-# ML Model Configuration
-MODEL_VERSION = os.getenv("MODEL_VERSION", "v1.0")
-MODEL_PATH = os.getenv("MODEL_PATH", str(MODEL_DIR / f"smart_farmer_vision_{MODEL_VERSION}.h5"))
+# ML Configuration (TensorFlow removed - using Ultralytics for vision)
 MIN_PREDICTION_CONFIDENCE = float(os.getenv("MIN_PREDICTION_CONFIDENCE", "0.7"))
-DISABLE_TENSORFLOW = os.getenv("DISABLE_TENSORFLOW", "false").lower() == "true"
+
+# Part Identification (PyTorch) Configuration
+PART_MODEL_PATH = os.getenv("PART_MODEL_PATH", str(MODEL_DIR / "part_identification_model.pth"))
+PART_LABEL_PATH = os.getenv("PART_LABEL_PATH", str(MODEL_DIR / "part_identification_label.json"))
+DISABLE_PART_IDENTIFICATION = os.getenv("DISABLE_PART_IDENTIFICATION", "false").lower() == "true"
 
 # Monitoring & Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -105,9 +107,11 @@ def validate_config():
     if not WEATHER_API_KEY:
         warnings.append("WEATHER_API_KEY not set - weather forecasting disabled")
     
-    # Check model file exists
-    if not DISABLE_TENSORFLOW and not Path(MODEL_PATH).exists():
-        warnings.append(f"Model file not found: {MODEL_PATH}")
+    # Check part identification model
+    if not DISABLE_PART_IDENTIFICATION and not Path(PART_MODEL_PATH).exists():
+        warnings.append(f"Part identification model file not found: {PART_MODEL_PATH}")
+    if not Path(PART_LABEL_PATH).exists():
+        warnings.append(f"Part identification label file not found: {PART_LABEL_PATH}")
     
     return errors, warnings
 
@@ -128,6 +132,5 @@ if __name__ == "__main__":
     if not errors and not warnings:
         print("✅ All configuration valid!")
     
-    print(f"\nModel Path: {MODEL_PATH}")
-    print(f"Database: {DATABASE_URL}")
-    print(f"TensorFlow Disabled: {DISABLE_TENSORFLOW}")
+    print(f"\nDatabase: {DATABASE_URL}")
+    print(f"PyTorch Enabled: {not DISABLE_PART_IDENTIFICATION}")
