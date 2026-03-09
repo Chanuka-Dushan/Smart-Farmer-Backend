@@ -831,13 +831,15 @@ app = FastAPI()
 
 from fastapi.middleware.cors import CORSMiddleware
 
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origins=["farmerlk.me", "www.farmerlk.me", "http://localhost:3000", "http://localhost", "http://localhost:8000",],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)
+
+
 
 app.include_router(blockchain_routes.router)
 
