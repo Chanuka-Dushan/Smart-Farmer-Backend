@@ -1,0 +1,10 @@
+# Force pip to NEVER install opencv-python (GUI version)
+# This prevents ultralytics and other packages from installing it as a dependency
+# We use opencv-python-headless for server environments (no GUI/libGL.so.1 dependencies)
+
+# Block ALL GUI versions of opencv
+opencv-python @ https://invalid.invalid/opencv-python-is-blocked-use-headless
+opencv-contrib-python @ https://invalid.invalid/opencv-contrib-python-is-blocked-use-headless
+
+# Require headless version
+opencv-python-headless>=4.8.0

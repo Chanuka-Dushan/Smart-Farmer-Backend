@@ -1,0 +1,64 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+dist
+build
+.eggs
+
+# Virtual environments
+venv
+env
+ENV
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+README.md
+*.md
+!requirements.txt
+
+# Large model files (assuming they're uploaded separately or downloaded)
+backend/smart_farmer_vision_v1.h5
+backend/models/*.pt
+backend/models/*.pth
+backend/models/*.h5
+backend/knowledge_cache.json
+
+# Build artifacts
+smart_farmer/build
+smart_farmer/.dart_tool
+smart_farmer/.flutter-plugins
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+
+# Temporary files
+tmp
+temp
+*.tmp
