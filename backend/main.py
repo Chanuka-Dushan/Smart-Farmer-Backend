@@ -34,6 +34,14 @@ from routes.blockchain_routes import router as blockchain_routes
 from routes.parts_routes import router as parts_routes
 from routes.transfer_routes import router as transfer_routes
 
+# ML helpers (import after environment variables are loaded)
+from ml_utils import ImagePreprocessor, PredictionValidator, clip_prediction, PartIdentifier, TORCH_AVAILABLE
+from config import (
+    MIN_PREDICTION_CONFIDENCE,
+    PART_MODEL_PATH,
+    PART_LABEL_PATH,
+    DISABLE_PART_IDENTIFICATION
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -939,16 +947,29 @@ WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 if not WEATHER_API_KEY:
     logger.warning("⚠️ WEATHER_API_KEY not set - weather forecasting will be disabled")
 
-# Initialize machine learning utilities (deferred - imported later where needed)
-MIN_PREDICTION_CONFIDENCE = float(os.getenv("MIN_PREDICTION_CONFIDENCE", "0.7"))
-image_preprocessor = None
-prediction_validator = None
+# Initialize machine learning utilities
+image_preprocessor = ImagePreprocessor(target_size=(224, 224))
+prediction_validator = PredictionValidator(min_confidence=MIN_PREDICTION_CONFIDENCE)
 
 print("✓ ML utilities initialized (TensorFlow removed - using Ultralytics for vision)")
 
 # --- Part Identification Model (PyTorch) ---
-# Deferred initialization - will be loaded when needed
 part_identifier = None
+if TORCH_AVAILABLE and not DISABLE_PART_IDENTIFICATION:
+    try:
+        part_identifier = PartIdentifier(PART_MODEL_PATH, PART_LABEL_PATH)
+        if part_identifier.load_model():
+            logger.info(f"✓ Part identification model loaded: {PART_MODEL_PATH}")
+        else:
+            part_identifier = None
+    except Exception as e:
+        part_identifier = None
+        logger.warning(f"⚠️ Part identification model not loaded: {e}")
+else:
+    if DISABLE_PART_IDENTIFICATION:
+        logger.info("⚠️ Part identification disabled by configuration")
+    else:
+        logger.warning("⚠️ PyTorch not available - part identification disabled")
 
 # --- Historical Stress Engine ---
 def get_historical_stress_factor(location: str, part_name: str):
@@ -1039,18 +1060,6 @@ async def predict_lifecycle(
         usage_hours_value = float(usage_hours or 0.0)
         logger.info(f"📥 NEW REQUEST: {part_name} | Hours: {usage_hours} | Location: {location}")
         logger.info(f"📸 Image: {image.filename} ({image.content_type})")
-
-        # Import ML utilities
-        try:
-            from ml_utils import ImagePreprocessor, PredictionValidator, clip_prediction
-            from config import MIN_PREDICTION_CONFIDENCE
-        except ImportError as e:
-            logger.error(f"Failed to import ML utilities: {e}")
-            raise HTTPException(status_code=500, detail="ML utilities not available")
-
-        # Initialize validators
-        image_preprocessor = ImagePreprocessor(target_size=(224, 224))
-        prediction_validator = PredictionValidator(min_confidence=MIN_PREDICTION_CONFIDENCE)
 
         # A. GET FRESH LIFESPAN (From AI Knowledge / Gemini)
         if ai_available:
@@ -1838,13 +1847,6 @@ async def identify_part(image: UploadFile = File(...), db: Session = Depends(get
     Returns top-5 predictions with part details, compatibility, and description.
     """
     logger.info(f"📸 Part identification request: {image.filename} ({image.content_type})")
-
-    # Import ML utilities
-    try:
-        from ml_utils import ImagePreprocessor
-    except ImportError as e:
-        logger.error(f"Failed to import ML utilities: {e}")
-        raise HTTPException(status_code=500, detail="ML utilities not available")
 
     # Read the uploaded image
     img_data = await image.read()
