@@ -166,13 +166,13 @@ Important:
             await asyncio.sleep(0.1)
             
             # Trigger AI response with EXPLICIT audio modality and voice
+            # NOTE: Instructions are set at session level, NOT in response.create
             response_event = {
                 "type": "response.create",
                 "response": {
                     "modalities": ["audio", "text"],  # Audio first!
                     "voice": "alloy",  # Explicitly set voice
-                    "output_audio_format": "pcm16",
-                    "instructions": "You must respond with voice audio. Greet the user warmly in their language and ask about tyre usage. Keep it brief (2 sentences)."
+                    "output_audio_format": "pcm16"
                 }
             }
             
