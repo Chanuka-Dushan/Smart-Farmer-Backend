@@ -55,6 +55,7 @@ from routes.comparison import router as comparison_router
 from routes import feedback
 from routes.part_routes import router as part_router
 from routes.inventory import router as inventory_router
+from routes.rf_test import router as rf_test_router
 
 from routes import blockchain_routes
 
@@ -831,13 +832,14 @@ app = FastAPI()
 
 from fastapi.middleware.cors import CORSMiddleware
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["farmerlk.me", "www.farmerlk.me", "http://localhost:3000", "http://localhost", "http://localhost:8000",],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
 
 
 
@@ -854,6 +856,7 @@ app.include_router(comparison_router)
 app.include_router(feedback.router)
 app.include_router(part_router)
 app.include_router(inventory_router)
+app.include_router(rf_test_router)
 # --- AI Knowledge Integration ---
 try:
     import ai_knowledge
