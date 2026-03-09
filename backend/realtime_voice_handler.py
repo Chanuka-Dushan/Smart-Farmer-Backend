@@ -13,7 +13,16 @@ import websockets
 from datetime import datetime
 from fastapi import WebSocket
 
+# Force specific logger for this module with INFO level
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Also log to console to ensure visibility
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+formatter = logging.Formatter('[%(levelname)s] %(name)s: %(message)s')
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 
 class RealtimeVoiceHandler:
@@ -110,7 +119,9 @@ Important:
             }
             
             logger.info("📤 Sending session configuration to OpenAI...")
+            logger.error("📤 [DEBUG] Sending session configuration to OpenAI...")  # Force ERROR level
             await openai_ws.send(json.dumps(session_config))
+            logger.error("✅ [DEBUG] Session configuration sent successfully")
             logger.info("✅ Session configuration sent successfully")
             
         except Exception as e:
@@ -277,6 +288,7 @@ Important:
         Sends session.ready and greeting after receiving session.created from OpenAI
         """
         try:
+            logger.error("👂 [DEBUG] Starting OpenAI event listener...")  # Force ERROR level
             logger.info("👂 Starting OpenAI event listener...")
             event_count = 0
             async for message in openai_ws:
@@ -285,12 +297,16 @@ Important:
                     event = json.loads(message)
                     event_type = event.get("type")
                     
-                    # Log ALL events initially to debug
-                    if event_count <= 10 or event_type not in ["response.audio.delta", "input_audio_buffer.speech_started"]:
+                    # Log ALL events initially to debug - USE ERROR LEVEL TO FORCE VISIBILITY
+                    if event_count <= 10:
+                        logger.error(f"📡 [DEBUG EVENT #{event_count}] {event_type}")
+                    
+                    if event_type not in ["response.audio.delta", "input_audio_buffer.speech_started"]:
                         logger.info(f"📡 OpenAI event #{event_count}: {event_type}")
                     
                     # Handle different event types
                     if event_type == "session.created":
+                        logger.error("🎉 [DEBUG] OpenAI session created event received!")
                         logger.info("🎉 OpenAI session created event received!")
                         
                         # Now OpenAI is ready, notify mobile client
@@ -407,16 +423,20 @@ Important:
         
         try:
             # Connect to OpenAI Realtime API
+            print(f"🎤 [REALTIME] Starting voice session: {session_id}")  # Force print
+            logger.error(f"🎤 [DEBUG] Starting voice session: {session_id}")  # Force ERROR level
             logger.info(f"🎤 Starting voice session: {session_id}")
             openai_ws = await self.connect_to_openai()
             
             if not openai_ws:
+                logger.error("❌ Failed to connect to OpenAI")
                 await client_ws.send_json({
                     "type": "error",
                     "message": "Failed to connect to voice service"
                 })
                 return
             
+            logger.error(f"✅ [DEBUG] Connected to OpenAI, configuring session...")
             # Configure the session
             await self.configure_session(openai_ws, damage_info, language)
             
