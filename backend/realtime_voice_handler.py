@@ -137,43 +137,22 @@ Important:
         language: str = "si"
     ):
         """
-        Send initial AI greeting to start the conversation
-        Sends a simple user message to trigger the AI's greeting based on system instructions
+        Trigger initial AI greeting with audio response
+        Don't send user message - directly trigger AI audio response based on system instructions
         """
         try:
-            # Simple user message to trigger conversation start
-            # The AI will respond based on the system instructions
-            greeting_trigger = "Hello" if language == "en" else "හෙලෝ"
+            # CRITICAL: Don't send user text message - it causes text-only response
+            # Instead, directly trigger AI response which forces audio generation
             
-            # Add user message to conversation
-            greeting_item = {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": greeting_trigger
-                        }
-                    ]
-                }
-            }
+            logger.info("📤 Triggering AI greeting with audio-only response...")
+            logger.error(f"📤 [DEBUG] Forcing audio response without user text input")
             
-            logger.info("📤 Sending greeting trigger to OpenAI...")
-            logger.error(f"📤 [DEBUG] Sending greeting trigger: '{greeting_trigger}'")
-            await openai_ws.send(json.dumps(greeting_item))
-            
-            # Small delay to ensure message is processed
-            await asyncio.sleep(0.1)
-            
-            # Trigger AI response with EXPLICIT audio modality and voice
-            # NOTE: Instructions are set at session level, NOT in response.create
+            # Trigger AI response with AUDIO-ONLY modality (no text fallback)
             response_event = {
                 "type": "response.create",
                 "response": {
-                    "modalities": ["audio", "text"],  # Audio first!
-                    "voice": "alloy",  # Explicitly set voice
+                    "modalities": ["audio"],  # AUDIO ONLY - no text option!
+                    "voice": "alloy",
                     "output_audio_format": "pcm16"
                 }
             }

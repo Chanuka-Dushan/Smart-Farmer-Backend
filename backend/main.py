@@ -1740,6 +1740,92 @@ async def voice_chat_websocket(
         except:
             pass
 
+
+@app.websocket("/ws/tyre/text-chat")
+async def text_chat_websocket(
+    websocket: WebSocket,
+    damage_type: str,
+    confidence: float,
+    severity: str,
+    lifespan_reduction: float
+):
+    """
+    WebSocket endpoint for structured text Q&A when voice is unavailable
+    
+    Query Parameters:
+        - damage_type: Type of damage detected (e.g., 'crack', 'treadwear')
+        - confidence: Detection confidence (0-1)
+        - severity: Severity level (e.g., 'minor', 'moderate', 'severe')
+        - lifespan_reduction: Expected lifespan reduction (0-1)
+    
+    WebSocket Protocol:
+        Client -> Server:
+            - JSON: {"type": "message", "content": "user answer"}
+        
+        Server -> Client:
+            - JSON: {"type": "message", "role": "assistant", "content": "question text"}
+            - JSON: {"type": "error", "content": "error message"}
+            - JSON: {"type": "result", "content": "final message", "lifespan_months": 24.5, ...}
+    
+    Example Usage:
+        ws = new WebSocket('ws://localhost:8080/ws/tyre/text-chat?damage_type=crack&confidence=0.85&severity=moderate&lifespan_reduction=0.15')
+    """
+    if not TYRE_SYSTEM_AVAILABLE:
+        await websocket.close(code=1003, reason="Tyre AI system not available")
+        return
+    
+    # Accept WebSocket connection
+    await websocket.accept()
+    logger.info(f"💬 Text chat WebSocket connected")
+    
+    try:
+        # Generate session ID
+        import uuid
+        session_id = str(uuid.uuid4())
+        
+        # Prepare damage information
+        damage_info = {
+            "damage_type": damage_type,
+            "confidence": confidence,
+            "severity": severity,
+            "lifespan_reduction": lifespan_reduction
+        }
+        
+        # Get text chat handler
+        from text_chat_handler import get_text_chat_handler
+        text_handler = get_text_chat_handler()
+        if not text_handler:
+            await websocket.send_json({
+                "type": "error",
+                "content": "Text chat service not available"
+            })
+            await websocket.close()
+            return
+        
+        # Handle the text chat session
+        await text_handler.handle_text_chat_session(
+            websocket,
+            session_id,
+            damage_info
+        )
+        
+    except WebSocketDisconnect:
+        logger.info("📱 Text chat client disconnected")
+    except Exception as e:
+        logger.error(f"❌ Text chat WebSocket error: {e}", exc_info=True)
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "content": f"Session error: {str(e)}"
+            })
+        except:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
+
 # ============================================================================
 # END TYRE HEALTH SYSTEM
 # ============================================================================
