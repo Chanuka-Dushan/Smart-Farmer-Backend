@@ -111,8 +111,8 @@ Important:
                     "input_audio_format": "pcm16",
                     "output_audio_format": "pcm16",
                     "input_audio_transcription": {
-                        "model": "whisper-1",
-                        "language": "si" if language == "si" else "en"  # Explicit language hint
+                        "model": "whisper-1"
+                        # No explicit language - let Whisper auto-detect (supports Sinhala in auto mode)
                     },
                     "turn_detection": None,
                     "temperature": 0.8,
