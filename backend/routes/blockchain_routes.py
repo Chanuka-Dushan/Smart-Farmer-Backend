@@ -1,96 +1,195 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-from typing import List
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
-from models.user import AppUser
-from models.schemas import (
-    PartVerificationResponse,
-    PartRegisterRequest,
-    TransferRequest,
-    MaintenanceLogRequest,
-    RatingRequest,
-    MessageResponse
+from utils.blockchain_service import (
+    register_part,
+    verify_part,
+    transfer_part
 )
-from utils.database import get_db
-from utils.auth import get_current_user
 
-router = APIRouter(prefix="/api/blockchain", tags=["Blockchain & Ledger"])
+from utils.qr_service import generate_qr
+from utils.qr_jwt_service import verify_qr_token
 
-@router.get("/verify/{qr_code}", response_model=PartVerificationResponse)
-def verify_part_authenticity(qr_code: str, db: Session = Depends(get_db)):
-    """
-    Scan a QR code to verify part provenance and authenticity from the ledger.
-    """
-    query = text("""
-        SELECT p.name, p.brand, m.name as manufacturer, map.blockchain_id, map.is_refurbished, map.id
-        FROM bc_parts_ledger_map map
-        JOIN parts p ON map.part_id = p.id
-        JOIN bc_manufacturers m ON map.manufacturer_id = m.id
-        WHERE map.blockchain_id = :qr
-    """)
-    
-    result = db.execute(query, {"qr": qr_code}).fetchone()
-    
-    if not result:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="This part serial number is not registered on the Blockchain ledger."
-        )
+from utils.parts_repository import (
+    update_blockchain_registration,
+    get_part_metadata
+)
 
-    # Fetch ledger history from bc_ownership_records
-    history_query = text("""
-        SELECT status, transfer_date FROM bc_ownership_records 
-        WHERE bc_part_id = :id ORDER BY transfer_date DESC
-    """)
-    history_records = db.execute(history_query, {"id": result[5]}).fetchall()
+router = APIRouter(
+    prefix="/api/blockchain",
+    tags=["Blockchain"]
+)
 
-    return PartVerificationResponse(
-        status="AUTHENTIC",
-        name=result[0],
-        brand=result[1],
-        manufacturer=result[2],
-        serial=result[3],
-        condition="Refurbished" if result[4] else "New",
-        history=[{"event": h[0], "date": str(h[1])} for h in history_records]
-    )
 
-@router.post("/register", response_model=MessageResponse)
-def register_on_ledger(data: PartRegisterRequest, current_user: AppUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    """
-    Register a physical part as a Digital Twin on the Hyperledger Fabric network.
-    """
+# ==========================================
+# REQUEST MODELS
+# ==========================================
+
+class TransferRequest(BaseModel):
+
+    serialNumber: str
+    newOwner: str
+
+
+class QRVerifyRequest(BaseModel):
+
+    qr_token: str
+
+
+# ==========================================
+# REGISTER PART IN BLOCKCHAIN
+# ==========================================
+
+@router.post("/register")
+def register_blockchain(data: dict):
+
     try:
-        db.execute(
-            text("INSERT INTO bc_parts_ledger_map (part_id, blockchain_id, manufacturer_id) VALUES (:p, :bc, :m)"),
-            {"p": data.part_id, "bc": data.serial_number, "m": data.manufacturer_id}
+
+        serial = data["serialNumber"]
+
+        # 🔴 CHECK METADATA FIRST
+        metadata = get_part_metadata(serial)
+
+        if not metadata:
+            raise HTTPException(
+                status_code=400,
+                detail="Metadata must be registered first"
+            )
+
+        # Register part in blockchain
+        result = register_part(data)
+
+        tx_hash = result["tx_hash"]
+
+        # Update DB with blockchain tx hash
+        update_blockchain_registration(serial, tx_hash)
+
+        # Generate QR code
+        qr_image = generate_qr(serial, tx_hash)
+
+        return StreamingResponse(
+            qr_image,
+            media_type="image/png"
         )
-        db.commit()
-        return MessageResponse(message="Asset successfully minted on Blockchain Ledger", success=True)
+
     except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
 
-@router.post("/transfer", response_model=MessageResponse)
-def transfer_ownership(data: TransferRequest, current_user: AppUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    """
-    Records a secure ownership transfer between stakeholders.
-    """
-    db.execute(
-        text("INSERT INTO bc_ownership_records (bc_part_id, current_owner_user_id, status) VALUES (:id, :u, 'Transferred')"),
-        {"id": data.bc_map_id, "u": data.buyer_id}
-    )
-    db.commit()
-    return MessageResponse(message="Ownership transfer recorded on-chain", success=True)
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
-@router.post("/rate", response_model=MessageResponse)
-def rate_seller_reputation(data: RatingRequest, current_user: AppUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    """
-    Updates the decentralized reputation score of a vendor.
-    """
-    db.execute(
-        text("INSERT INTO bc_reputation_scores (seller_id, rater_id, rating_value, comment) VALUES (:s, :r, :v, :c)"),
-        {"s": data.seller_id, "r": current_user.id, "v": data.rating, "c": data.comment}
-    )
-    db.commit()
-    return MessageResponse(message="Feedback submitted and verified", success=True)
+# ==========================================
+# VERIFY PART FROM BLOCKCHAIN
+# ==========================================
+
+@router.get("/verify/{serial}")
+
+def verify_blockchain_part(serial: str):
+
+    try:
+
+        blockchain_data = verify_part(serial)
+
+        if not blockchain_data:
+
+            return {
+                "status": "FAKE",
+                "message": "Part not found on blockchain"
+            }
+
+        metadata = get_part_metadata(serial)
+
+        return {
+            "status": "AUTHENTIC",
+            "serialNumber": serial,
+            "blockchainData": blockchain_data,
+            "metadata": metadata
+        }
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+
+# ==========================================
+# VERIFY PART USING QR
+# ==========================================
+
+@router.post("/verify-qr")
+
+def verify_qr(request: QRVerifyRequest):
+
+    try:
+
+        decoded = verify_qr_token(request.qr_token)
+
+        if not decoded:
+
+            return {
+                "status": "INVALID_QR"
+            }
+
+        serial = decoded["serial"]
+
+        tx_hash = decoded["tx_hash"]
+
+        blockchain_data = verify_part(serial)
+
+        if not blockchain_data:
+
+            return {
+                "status": "FAKE"
+            }
+
+        metadata = get_part_metadata(serial)
+
+        return {
+            "status": "AUTHENTIC",
+            "serialNumber": serial,
+            "txHash": tx_hash,
+            "blockchainData": blockchain_data,
+            "metadata": metadata
+        }
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+
+# ==========================================
+# TRANSFER OWNERSHIP
+# ==========================================
+
+@router.post("/transfer")
+
+def transfer_ownership(request: TransferRequest):
+
+    try:
+
+        result = transfer_part(
+            request.serialNumber,
+            request.newOwner
+        )
+
+        return {
+            "status": "SUCCESS",
+            "message": "Ownership transferred",
+            "serialNumber": request.serialNumber,
+            "newOwner": request.newOwner,
+            "txHash": result
+        }
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
