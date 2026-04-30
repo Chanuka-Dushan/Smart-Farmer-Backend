@@ -98,6 +98,37 @@ env.bak/
 venv.bak/
 
 # Spyder project settings
+
+# ===========================
+# Large Directories to Exclude
+# ===========================
+
+# Node.js dependencies (can be 300+ MB)
+dashboard/node_modules/
+node_modules/
+dashboard/.next/
+dashboard/out/
+dashboard/.npm
+
+# Temporary uploads
+backend/uploads/
+uploads/
+
+# Build and cache
+backend/logs/
+backend/lifecycle/
+backend/test_venv/
+test_venv/
+
+# Training directories (large)
+backend/models/training_*/
+backend/models/tyremodel/
+
+# System files
+.DS_Store
+Thumbs.db
+*.zip
+*.tar.gz
 .spyderproject
 .spyproject
 
