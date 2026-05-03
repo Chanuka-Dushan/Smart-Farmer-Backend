@@ -1,3 +1,5 @@
+# backend/utils/vectorizer/vector_cache.py
+
 import os
 import sys
 import json
@@ -15,9 +17,6 @@ from utils.vectorizer.vector_builder import build_vector
 
 
 def _convert_vector_to_list(vector: Any) -> List[float]:
-    """
-    Convert sparse/numpy/list vector into a normal Python list.
-    """
     if vector is None:
         return []
 
@@ -39,90 +38,90 @@ def _convert_vector_to_list(vector: Any) -> List[float]:
     raise ValueError("Unsupported vector format")
 
 
+def _decode_vector(vector_payload: Any) -> Optional[List[float]]:
+    if vector_payload is None:
+        return None
+
+    if isinstance(vector_payload, str):
+        return json.loads(vector_payload)
+
+    if isinstance(vector_payload, list):
+        return vector_payload
+
+    return _convert_vector_to_list(vector_payload)
+
+
 def upsert_part_vector(
     db: Session,
     part_id: int,
     vector: Any,
-    vector_version: str = "v1"
+    vector_version: str = "tfidf_v2"
 ) -> PartVector:
-    """
-    Insert or update cached vector for a part.
-    """
     vector_list = _convert_vector_to_list(vector)
     vector_payload = json.dumps(vector_list)
 
-    existing = db.query(PartVector).filter(PartVector.part_id == part_id).first()
+    existing = db.query(PartVector).filter(
+        PartVector.part_id == part_id
+    ).first()
 
-    if existing:
-        existing.vector = vector_payload
-        existing.vector_version = vector_version
+    try:
+        if existing:
+            existing.vector = vector_payload
+            existing.vector_version = vector_version
+            saved_row = existing
+        else:
+            saved_row = PartVector(
+                part_id=part_id,
+                vector=vector_payload,
+                vector_version=vector_version
+            )
+            db.add(saved_row)
+
         db.commit()
-        db.refresh(existing)
-        return existing
+        db.refresh(saved_row)
+        return saved_row
 
-    new_row = PartVector(
-        part_id=part_id,
-        vector=vector_payload,
-        vector_version=vector_version
-    )
-    db.add(new_row)
-    db.commit()
-    db.refresh(new_row)
-    return new_row
+    except Exception:
+        db.rollback()
+        raise
 
 
 def get_part_vector(db: Session, part_id: int) -> Optional[List[float]]:
-    """
-    Get cached vector for one part as Python list.
-    """
-    row = db.query(PartVector).filter(PartVector.part_id == part_id).first()
+    row = db.query(PartVector).filter(
+        PartVector.part_id == part_id
+    ).first()
 
-    if not row or row.vector is None:
+    if not row:
         return None
 
-    if isinstance(row.vector, str):
-        return json.loads(row.vector)
-
-    if isinstance(row.vector, list):
-        return row.vector
-
-    return row.vector
+    return _decode_vector(row.vector)
 
 
-def get_vectors_by_part_ids(db: Session, part_ids: List[int]) -> Dict[int, List[float]]:
-    """
-    Get cached vectors for multiple part IDs.
-    Returns:
-    {
-        1: [...],
-        2: [...]
-    }
-    """
+def get_vectors_by_part_ids(
+    db: Session,
+    part_ids: List[int]
+) -> Dict[int, List[float]]:
     if not part_ids:
         return {}
 
-    rows = db.query(PartVector).filter(PartVector.part_id.in_(part_ids)).all()
+    rows = db.query(PartVector).filter(
+        PartVector.part_id.in_(part_ids)
+    ).all()
 
     result: Dict[int, List[float]] = {}
 
     for row in rows:
-        if row.vector is None:
-            continue
-
-        if isinstance(row.vector, str):
-            result[row.part_id] = json.loads(row.vector)
-        elif isinstance(row.vector, list):
-            result[row.part_id] = row.vector
-        else:
-            result[row.part_id] = row.vector
+        vector = _decode_vector(row.vector)
+        if vector is not None:
+            result[row.part_id] = vector
 
     return result
 
 
-def rebuild_all_part_vectors(db: Session, vector_version: str = "v1") -> dict:
-    """
-    Build and cache vectors for all parts.
-    """
+def rebuild_all_part_vectors(
+    db: Session,
+    vector_version: str = "tfidf_v2"
+) -> dict:
     parts = db.query(Part).all()
 
     total_parts = len(parts)
@@ -144,6 +143,7 @@ def rebuild_all_part_vectors(db: Session, vector_version: str = "v1") -> dict:
             success_count += 1
 
         except Exception as e:
+            db.rollback()
             failure_count += 1
             failed_parts.append({
                 "part_id": part.id,

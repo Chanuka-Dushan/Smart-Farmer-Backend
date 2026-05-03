@@ -16,6 +16,8 @@ class Part(Base):
 
     # Cross-brand compatibility family
     compatibility_group = Column(String(255), nullable=True, index=True)
+    machine_family = Column(String, nullable=True)
+    function_type = Column(String, nullable=True)
 
     # Description for NLP similarity
     description = Column(Text, nullable=True)

@@ -11,204 +11,384 @@ sys.path.append(
 )
 
 from models.part import Part
+from models.research import FeedbackEvent
 from utils.vectorizer.vector_cache import get_part_vector, get_vectors_by_part_ids
 from utils.feedback_service import get_feedback_score
+from utils.ml.rf_predictor import predict_rf_probability
 
 
+# ---------------- HARD FILTER ----------------
 def filter_candidate_parts(db: Session, query_part: Part) -> List[Part]:
     """
-    Cross-brand rule filtering:
+    Phase 3:
+    Hard rules are used only for filtering, not scoring.
+
+    Required:
+    - exclude same exact part
     - same category
+    - same machine_family
     - same compatibility_group
-    - exclude query part itself
+    - same function_type
     """
+
     candidates = (
         db.query(Part)
         .filter(Part.id != query_part.id)
         .filter(Part.category == query_part.category)
+        .filter(Part.machine_family == query_part.machine_family)
         .filter(Part.compatibility_group == query_part.compatibility_group)
+        .filter(Part.function_type == query_part.function_type)
         .all()
     )
+
     return candidates
 
 
+# ---------------- SUBSTITUTE LEVEL ----------------
+def get_substitute_level(final_score: float) -> str:
+    if final_score >= 0.85:
+        return "exact"
+    elif final_score >= 0.70:
+        return "near"
+    return "functional"
+
+
+# ---------------- DATA QUALITY ----------------
+def calculate_data_quality_score(part: Part) -> float:
+    fields = [
+        part.name,
+        part.category,
+        part.machine_model,
+        part.machine_family,
+        part.function_type,
+        part.compatibility_group,
+        part.price,
+        part.lifespan,
+        part.specs_json,
+    ]
+
+    filled = sum(1 for v in fields if v not in [None, "", 0])
+    return filled / len(fields)
+
+
+# ---------------- FEEDBACK RELIABILITY ----------------
+def calculate_feedback_reliability_score(db: Session, part_id: int, rec_id: int) -> float:
+    count = db.query(FeedbackEvent).filter(
+        FeedbackEvent.part_id == part_id,
+        FeedbackEvent.recommended_part_id == rec_id
+    ).count()
+
+    if count >= 5:
+        return 1.0
+    elif count >= 2:
+        return 0.75
+    elif count == 1:
+        return 0.60
+    return 0.50
+
+
+# ---------------- CONFIDENCE ----------------
+def calculate_confidence_score(ml: float, dq: float, fr: float) -> float:
+    """
+    Confidence is kept separate from final_score.
+    """
+    score = 0.60 * ml + 0.25 * dq + 0.15 * fr
+    return min(max(score, 0), 1)
+
+
+# ---------------- EVIDENCE SOURCE ----------------
+def get_evidence_source(ml_score: float, feedback_score: float) -> str:
+    if feedback_score > 0.7:
+        return "user_feedback"
+    elif ml_score > 0.8:
+        return "ml_high_confidence"
+    return "system_inferred"
+
+
+# ---------------- SAFE SPEC HELPER ----------------
+def get_spec_value(part: Part, key: str):
+    """
+    Safely read optional values from specs_json.
+    Example keys: diameter, material
+    """
+    if not part.specs_json:
+        return None
+
+    if isinstance(part.specs_json, dict):
+        return part.specs_json.get(key)
+
+    return None
+
+
+# ---------------- DIFFERENCE BUILDER ----------------
+def build_differences(query_part: Part, candidate: Part) -> Dict[str, Any]:
+    """
+    Phase 3:
+    Soft rule values are used only for explanation, not final_score.
+    Differences are optional because every part does not have every field.
+    """
+
+    differences = {}
+
+    # Price difference
+    if query_part.price and candidate.price:
+        price_diff = candidate.price - query_part.price
+        price_percent = (price_diff / query_part.price) * 100
+
+        differences["price"] = {
+            "original": query_part.price,
+            "recommended": candidate.price,
+            "difference": round(price_diff, 2),
+            "percentage_difference": round(price_percent, 2),
+            "summary": (
+                f"Lower price by {abs(round(price_percent, 2))}%"
+                if price_diff < 0
+                else f"Higher price by {round(price_percent, 2)}%"
+                if price_diff > 0
+                else "Same price"
+            )
+        }
+
+    # Lifespan difference
+    if query_part.lifespan and candidate.lifespan:
+        lifespan_diff = candidate.lifespan - query_part.lifespan
+
+        differences["lifespan"] = {
+            "original": query_part.lifespan,
+            "recommended": candidate.lifespan,
+            "difference": lifespan_diff,
+            "summary": (
+                "Longer lifespan"
+                if lifespan_diff > 0
+                else "Shorter lifespan"
+                if lifespan_diff < 0
+                else "Same lifespan"
+            )
+        }
+
+    # Optional material from specs_json
+    query_material = get_spec_value(query_part, "material")
+    candidate_material = get_spec_value(candidate, "material")
+
+    if query_material and candidate_material:
+        differences["material"] = {
+            "original": query_material,
+            "recommended": candidate_material,
+            "match": query_material == candidate_material,
+            "summary": (
+                "Same material"
+                if query_material == candidate_material
+                else "Different material"
+            )
+        }
+
+    # Optional diameter from specs_json
+    query_diameter = get_spec_value(query_part, "diameter")
+    candidate_diameter = get_spec_value(candidate, "diameter")
+
+    if query_diameter and candidate_diameter:
+        try:
+            diameter_diff = float(candidate_diameter) - float(query_diameter)
+
+            differences["diameter"] = {
+                "original": query_diameter,
+                "recommended": candidate_diameter,
+                "difference": round(diameter_diff, 2),
+                "summary": (
+                    f"Diameter difference = {abs(round(diameter_diff, 2))} mm"
+                    if diameter_diff != 0
+                    else "Same diameter"
+                )
+            }
+        except (ValueError, TypeError):
+            pass
+
+    return differences
+
+
+# ---------------- EXPLANATION ----------------
 def build_explanation(
     query_part: Part,
-    candidate_part: Part,
-    vector_similarity_score: float,
-    feedback_score: float
-) -> List[str]:
-    explanation = []
-
-    if query_part.category == candidate_part.category:
-        explanation.append("Same category matched")
-
-    if query_part.compatibility_group == candidate_part.compatibility_group:
-        explanation.append("Same compatibility group matched")
-
-    if query_part.machine_model == candidate_part.machine_model:
-        explanation.append("Same machine model matched")
-
-    if query_part.name and candidate_part.name:
-        if query_part.name.strip().lower() == candidate_part.name.strip().lower():
-            explanation.append("Exact part name matched")
-
-    if vector_similarity_score >= 0.70:
-        explanation.append("Text/spec similarity is high")
-    elif vector_similarity_score >= 0.40:
-        explanation.append("Text/spec similarity is moderate")
-
-    try:
-        if query_part.diameter is not None and candidate_part.diameter is not None:
-            diff = abs(float(query_part.diameter) - float(candidate_part.diameter))
-            if diff <= 2:
-                explanation.append("Similar diameter")
-    except Exception:
-        pass
-
-    if feedback_score > 0.60:
-        explanation.append("Positive feedback history")
-    elif feedback_score < 0.40:
-        explanation.append("Negative feedback history")
-    else:
-        explanation.append("Neutral or limited feedback history")
-
-    return explanation
-
-
-def recommend_parts(
-    db: Session,
-    part_id: int,
-    top_k: int = 5,
-    mode: str = "normal"
+    candidate: Part,
+    sim: float,
+    ml: float,
+    feedback: float,
+    substitute_level: str,
+    confidence: float
 ) -> Dict[str, Any]:
-    """
-    Main recommendation pipeline:
-    1. Fetch query part
-    2. Filter candidates by category + compatibility_group
-    3. Fetch cached vectors
-    4. Compute cosine similarity
-    5. hybrid_score = vector_similarity
-    6. feedback_score = get_feedback_score(...)
-    7. final_score = 0.90 * hybrid_score + 0.10 * feedback_score
-    8. Rank by final score
 
-    mode="normal"       -> returns final ranked recommendations
-    mode="before_after" -> returns rankings before and after feedback
-    """
+    matched_fields = {
+        "category": query_part.category == candidate.category,
+        "machine_family": query_part.machine_family == candidate.machine_family,
+        "compatibility_group": query_part.compatibility_group == candidate.compatibility_group,
+        "function_type": query_part.function_type == candidate.function_type,
+    }
 
-    # Step 1 - get query part
-    query_part = db.query(Part).filter(Part.id == part_id).first()
-    if not query_part:
-        raise ValueError(f"Part with id {part_id} not found")
+    differences = build_differences(query_part, candidate)
 
-    # Guard: compatibility_group should exist for cross-brand logic
-    if not getattr(query_part, "compatibility_group", None):
-        raise ValueError(
-            f"Part id {part_id} does not have compatibility_group. "
-            f"Cross-brand recommendation needs compatibility_group."
-        )
+    notes = []
 
-    # Step 2 - get query vector
-    query_vector = get_part_vector(db, query_part.id)
-    if query_vector is None:
-        raise ValueError(f"No cached vector found for part id {part_id}")
+    if all(matched_fields.values()):
+        notes.append("Passed all hard compatibility rules")
 
-    # Step 3 - filter candidates
-    candidates = filter_candidate_parts(db, query_part)
+    if sim >= 0.7:
+        notes.append("Vector similarity is high")
+    elif sim >= 0.4:
+        notes.append("Vector similarity is moderate")
+    else:
+        notes.append("Vector similarity is low")
 
-    # Step 4 - fetch candidate vectors
-    candidate_ids = [candidate.id for candidate in candidates]
-    candidate_vectors_map = get_vectors_by_part_ids(db, candidate_ids)
+    if ml >= 0.7:
+        notes.append("Random Forest predicted high compatibility")
+    elif ml >= 0.4:
+        notes.append("Random Forest predicted moderate compatibility")
+    else:
+        notes.append("Random Forest predicted low compatibility")
 
-    before_results = []
-    after_results = []
+    if feedback >= 0.7:
+        notes.append("User feedback strongly supports this recommendation")
+    elif feedback >= 0.4:
+        notes.append("User feedback moderately supports this recommendation")
+    else:
+        notes.append("Limited feedback support available")
 
-    query_vector_np = np.array(query_vector).reshape(1, -1)
+    if ml > 0.8 and sim > 0.7:
+        notes.append("Both ML model and similarity strongly support compatibility")
 
-    # Step 5 - compute scores
-    for candidate in candidates:
-        candidate_vector = candidate_vectors_map.get(candidate.id)
+    if substitute_level == "exact":
+        notes.append("This part is a direct replacement candidate")
+    elif substitute_level == "near":
+        notes.append("This part is a close alternative with minor differences")
+    else:
+        notes.append("This part is a functional alternative")
 
-        # skip missing cached vectors
-        if candidate_vector is None:
+    if confidence >= 0.75:
+        notes.append("Recommendation confidence is high")
+    elif confidence >= 0.5:
+        notes.append("Recommendation confidence is moderate")
+    else:
+        notes.append("Recommendation confidence is low")
+
+    why_recommended = (
+        "Recommended because it matches the same category, machine family, "
+        "compatibility group, and function type, then ranked using similarity, "
+        "Random Forest prediction, and feedback score."
+    )
+
+    return {
+        "why_recommended": why_recommended,
+        "matched_fields": matched_fields,
+        "differences": differences,
+        "substitute_level": substitute_level,
+        "confidence": round(confidence, 4),
+        "notes": notes
+    }
+
+
+# ---------------- MAIN RECOMMENDER ----------------
+def recommend_parts(db: Session, part_id: int, top_k: int = 5, mode="normal"):
+
+    query = db.query(Part).filter(Part.id == part_id).first()
+
+    if not query:
+        return {
+            "error": "Part not found",
+            "recommendations": []
+        }
+
+    query_vec = get_part_vector(db, query.id)
+
+    if not query_vec:
+        return {
+            "query_part": query.name,
+            "total_candidates": 0,
+            "recommendations": [],
+            "message": "Vector not found for query part"
+        }
+
+    query_np = np.array(query_vec).reshape(1, -1)
+
+    candidates = filter_candidate_parts(db, query)
+
+    if not candidates:
+        return {
+            "query_part": query.name,
+            "total_candidates": 0,
+            "recommendations": [],
+            "message": "No candidates passed the hard compatibility rules"
+        }
+
+    vectors = get_vectors_by_part_ids(db, [c.id for c in candidates])
+
+    results = []
+
+    for c in candidates:
+        vec = vectors.get(c.id)
+
+        if not vec:
             continue
 
-        candidate_vector_np = np.array(candidate_vector).reshape(1, -1)
+        sim = float(cosine_similarity(query_np, np.array(vec).reshape(1, -1))[0][0])
+        feedback = get_feedback_score(db, query.id, c.id)
+        ml = predict_rf_probability(db=db, part_a=query, part_b=c)
 
-        vector_similarity_score = float(
-            cosine_similarity(query_vector_np, candidate_vector_np)[0][0]
-        )
+        # Keep Phase 2 final score formula unchanged
+        final = 0.50 * sim + 0.30 * ml + 0.20 * feedback
 
-        # current hybrid score = vector similarity
-        hybrid_score = vector_similarity_score
+        sub = get_substitute_level(final)
 
-        # real feedback score from feedback_events
-        feedback_score = get_feedback_score(db, query_part.id, candidate.id)
+        dq = calculate_data_quality_score(c)
+        fr = calculate_feedback_reliability_score(db, query.id, c.id)
+        conf = calculate_confidence_score(ml, dq, fr)
 
-        # final adaptive score
-        final_score = 0.90 * hybrid_score + 0.10 * feedback_score
+        evidence = get_evidence_source(ml, feedback)
 
         explanation = build_explanation(
-            query_part=query_part,
-            candidate_part=candidate,
-            vector_similarity_score=vector_similarity_score,
-            feedback_score=feedback_score
+            query_part=query,
+            candidate=c,
+            sim=sim,
+            ml=ml,
+            feedback=feedback,
+            substitute_level=sub,
+            confidence=conf
         )
 
-        # before feedback ranking
-        before_results.append({
-            "recommended_part": candidate.id,
-            "name": candidate.name,
-            "category": candidate.category,
-            "machine_model": candidate.machine_model,
-            "compatibility_group": candidate.compatibility_group,
-            "hybrid_score": round(hybrid_score, 4),
-            "similarity_percentage": round(hybrid_score * 100, 2)
-        })
+        results.append({
+            "recommended_part": c.id,
+            "name": c.name,
+            "category": c.category,
+            "machine_family": c.machine_family,
+            "compatibility_group": c.compatibility_group,
+            "function_type": c.function_type,
 
-        # after feedback ranking
-        after_results.append({
-            "recommended_part": candidate.id,
-            "name": candidate.name,
-            "category": candidate.category,
-            "machine_model": candidate.machine_model,
-            "compatibility_group": candidate.compatibility_group,
-            "hybrid_score": round(hybrid_score, 4),
-            "feedback_score": round(feedback_score, 4),
-            "final_score": round(final_score, 4),
-            "similarity_percentage": round(final_score * 100, 2),
+            "vector_similarity_score": round(sim, 4),
+            "ml_score": round(ml, 4),
+            "feedback_score": round(feedback, 4),
+
+            "final_score": round(final, 4),
+            "substitute_level": sub,
+
+            "confidence_score": round(conf, 4),
+            "data_quality_score": round(dq, 4),
+            "feedback_reliability_score": round(fr, 4),
+            "evidence_source": evidence,
+
             "explanation": explanation
         })
 
-    # sort before feedback by hybrid score only
-    before_results.sort(key=lambda x: x["hybrid_score"], reverse=True)
-
-    # sort after feedback by final adaptive score
-    after_results.sort(key=lambda x: x["final_score"], reverse=True)
-
-    if mode == "before_after":
-        return {
-            "query_part": {
-                "id": query_part.id,
-                "name": query_part.name,
-                "category": query_part.category,
-                "machine_model": query_part.machine_model,
-                "compatibility_group": query_part.compatibility_group
-            },
-            "total_candidates": len(candidates),
-            "before_feedback": before_results[:top_k],
-            "after_feedback": after_results[:top_k]
-        }
+    results.sort(key=lambda x: x["final_score"], reverse=True)
 
     return {
-        "query_part": {
-            "id": query_part.id,
-            "name": query_part.name,
-            "category": query_part.category,
-            "machine_model": query_part.machine_model,
-            "compatibility_group": query_part.compatibility_group
-        },
-        "total_candidates": len(candidates),
-        "recommendations": after_results[:top_k]
+        "query_part": query.name,
+        "query_part_id": query.id,
+        "hard_filter_rules": [
+            "same category",
+            "same machine_family",
+            "same compatibility_group",
+            "same function_type",
+            "exclude same exact part"
+        ],
+        "ranking_formula": "final_score = 0.50 * similarity + 0.30 * ml + 0.20 * feedback",
+        "total_candidates": len(results),
+        "recommendations": results[:top_k]
     }

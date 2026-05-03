@@ -7,7 +7,7 @@ from utils.parts_repository import (
 )
 
 router = APIRouter(
-    prefix="/api/parts",
+    prefix="/api/metadata",
     tags=["Parts Metadata"]
 )
 

@@ -10,7 +10,7 @@ sys.path.append(
 from models.part import Part
 from utils.vectorizer.text_builder import build_part_text
 from utils.database import SessionLocal
-from utils.compatibility import get_model_group
+
 
 
 def _safe_number(value: Any) -> float:
@@ -86,10 +86,13 @@ def build_dataset(db) -> Tuple[List[int], List[str], List[List[float]], List[Dic
         # categorical features
         machine_model = _safe_text(getattr(part, "machine_model", ""))
         category_row = {
-            "category": _safe_text(getattr(part, "category", "")),
-            "machine_model": machine_model,
-            "compatibility_group": get_model_group(machine_model),
-        }
+                 "category": _safe_text(getattr(part, "category", "")),
+                 "machine_model": _safe_text(getattr(part, "machine_model", "")),
+                 "machine_family": _safe_text(getattr(part, "machine_family", "")),
+                 "function_type": _safe_text(getattr(part, "function_type", "")),
+                 "compatibility_group": _safe_text(getattr(part, "compatibility_group", "")),       
+                            
+   }
         categories.append(category_row)
 
     return part_ids, texts, numeric, categories

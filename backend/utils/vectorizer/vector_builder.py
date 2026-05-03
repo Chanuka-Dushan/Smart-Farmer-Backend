@@ -11,7 +11,6 @@ sys.path.append(
 )
 
 from utils.vectorizer.text_builder import build_part_text
-from utils.compatibility import get_model_group
 
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -23,16 +22,21 @@ SCALER_PATH = os.path.join(ARTIFACTS_DIR, "scaler.joblib")
 ONEHOT_PATH = os.path.join(ARTIFACTS_DIR, "onehot.joblib")
 
 
-# Global cache so artifacts are loaded only once
 _tfidf = None
 _scaler = None
 _onehot = None
 
 
+CATEGORY_COLUMNS = [
+    "category",
+    "machine_model",
+    "machine_family",
+    "function_type",
+    "compatibility_group",
+]
+
+
 def _safe_number(value):
-    """
-    Convert numeric field safely to float.
-    """
     try:
         if value is None:
             return 0.0
@@ -42,18 +46,12 @@ def _safe_number(value):
 
 
 def _safe_text(value):
-    """
-    Convert value safely to lowercase string.
-    """
     if value is None:
         return ""
     return str(value).strip().lower()
 
 
 def load_artifacts():
-    """
-    Load saved vectorizer artifacts only once.
-    """
     global _tfidf, _scaler, _onehot
 
     if _tfidf is None:
@@ -70,37 +68,44 @@ def load_artifacts():
 
 def build_vector(part):
     """
-    Build final hybrid vector for one part using saved artifacts.
-    Returns a fixed-length list.
+    Build final vector for one part using saved TF-IDF, scaler, and OneHotEncoder.
+    Must use same categorical columns as train_vectorizer.py.
     """
     tfidf, scaler, onehot = load_artifacts()
 
-    # 1) text
+    # 1) Text vector
     text = build_part_text(part)
     text_vec = tfidf.transform([text])
 
-    # 2) numeric
+    # 2) Numeric vector
     numeric = [[
         _safe_number(getattr(part, "price", 0)),
         _safe_number(getattr(part, "diameter", 0)),
         _safe_number(getattr(part, "lifespan", 0)),
     ]]
+
     num_vec_dense = scaler.transform(numeric)
     num_vec = csr_matrix(num_vec_dense)
 
-    # 3) categorical
-    machine_model = _safe_text(getattr(part, "machine_model", ""))
-    category_df = pd.DataFrame([{
+    # 3) Categorical vector
+    category_row = {
         "category": _safe_text(getattr(part, "category", "")),
-        "machine_model": machine_model,
-        "compatibility_group": get_model_group(machine_model),
-    }])
+        "machine_model": _safe_text(getattr(part, "machine_model", "")),
+        "machine_family": _safe_text(getattr(part, "machine_family", "")),
+        "function_type": _safe_text(getattr(part, "function_type", "")),
+        "compatibility_group": _safe_text(getattr(part, "compatibility_group", "")),
+    }
+
+    category_df = pd.DataFrame([category_row])
+
+    # Force same column order as training
+    category_df = category_df[CATEGORY_COLUMNS]
+
     cat_vec = onehot.transform(category_df)
 
-    # 4) combine all
+    # 4) Combine all vectors
     final_vec = hstack([text_vec, cat_vec, num_vec])
 
-    # Return as normal Python list
     return final_vec.toarray()[0].tolist()
 
 
@@ -109,6 +114,7 @@ if __name__ == "__main__":
     from models.part import Part
 
     db = SessionLocal()
+
     try:
         part = db.query(Part).first()
 
@@ -116,10 +122,14 @@ if __name__ == "__main__":
             print("No parts found in database.")
         else:
             vector = build_vector(part)
+
             print("Part ID:", part.id)
             print("Part Name:", part.name)
+            print("Category:", getattr(part, "category", None))
             print("Machine Model:", getattr(part, "machine_model", None))
-            print("Compatibility Group:", get_model_group(getattr(part, "machine_model", "")))
+            print("Machine Family:", getattr(part, "machine_family", None))
+            print("Function Type:", getattr(part, "function_type", None))
+            print("Compatibility Group:", getattr(part, "compatibility_group", None))
             print("Vector length:", len(vector))
             print("First 10 values:", vector[:10])
 

@@ -9,6 +9,7 @@ sys.path.append(
 
 from utils.ml.pair_features import build_pair_features
 
+
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 ARTIFACTS_DIR = os.path.join(BASE_DIR, "models_artifacts")
 
@@ -31,17 +32,31 @@ def load_rf_model():
     return _rf_model, _rf_columns
 
 
-def predict_rf_probability(part_a, part_b) -> float:
-    model, feature_columns = load_rf_model()
+def predict_rf_probability(db, part_a, part_b) -> float:
+    """
+    Predict compatibility probability using Random Forest.
 
-    feature_dict = build_pair_features(part_a, part_b)
-    df = pd.DataFrame([feature_dict])
+    Returns:
+        0.0 - 1.0 probability score
 
-    for col in feature_columns:
-        if col not in df.columns:
-            df[col] = 0.0
+    Fallback:
+        If RF model fails, return 0.5 neutral score.
+    """
+    try:
+        model, feature_columns = load_rf_model()
 
-    df = df[feature_columns]
+        feature_dict = build_pair_features(db, part_a, part_b)
+        df = pd.DataFrame([feature_dict])
 
-    prob = model.predict_proba(df)[0][1]
-    return float(prob)
+        for col in feature_columns:
+            if col not in df.columns:
+                df[col] = 0.0
+
+        df = df[feature_columns]
+
+        prob = model.predict_proba(df)[0][1]
+        return float(prob)
+
+    except Exception as e:
+        print("RF prediction error:", e)
+        return 0.5
