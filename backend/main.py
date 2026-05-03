@@ -879,7 +879,15 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["farmerlk.me", "www.farmerlk.me", "http://localhost:3000", "http://localhost", "http://localhost:8000"],
+    allow_origins=[
+        "https://farmerlk.me",
+        "https://www.farmerlk.me",
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://localhost",
+        "https://smart-farmer-39b56.web.app",
+        "*"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

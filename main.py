@@ -54,10 +54,20 @@ def get_db():
 # --- 5. API Endpoints ---
 app = FastAPI()
 
+# Get allowed origins from environment or use defaults
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").split(",") if os.getenv("ALLOWED_ORIGINS") else [
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "https://farmerlk.me",
+    "https://www.farmerlk.me",
+    "https://smart-farmer-39b56.web.app",
+    "*",  # Allow all in development - RESTRICT IN PRODUCTION
+]
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with your frontend domain
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
