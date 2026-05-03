@@ -78,56 +78,9 @@ get_tyre_predictor = None
 get_voice_handler = None  # Realtime voice handler
 
 # CRITICAL: Fix OpenCV before importing tyre modules
-# Check OpenCV installation at startup
-try:
-    logger.info("🔍 Checking OpenCV installation...")
-    import subprocess
-    result = subprocess.run(
-        [sys.executable, "-c", "import sys; [print(p) for p in sys.path if 'opencv' in p.lower()]"],
-        capture_output=True,
-        text=True,
-        timeout=5
-    )
-    
-    # List installed opencv packages
-    pip_result = subprocess.run(
-        [sys.executable, "-m", "pip", "list"],
-        capture_output=True,
-        text=True,
-        timeout=10
-    )
-    opencv_packages = [line for line in pip_result.stdout.split('\n') if 'opencv' in line.lower()]
-    if opencv_packages:
-        logger.info(f"📦 Installed OpenCV packages:")
-        for pkg in opencv_packages:
-            logger.info(f"   {pkg}")
-            if 'opencv-python ' in pkg and 'headless' not in pkg:
-                logger.error(f"❌ CRITICAL: GUI opencv-python detected: {pkg}")
-                logger.error("❌ This will cause libGL.so.1 errors!")
-    else:
-        logger.warning("⚠️  No OpenCV packages found!")
-        
-except Exception as e:
-    logger.warning(f"⚠️  OpenCV check failed: {e}")
-
-# Run opencv preload fix
-try:
-    logger.info("🔧 Running OpenCV preload fix...")
-    import subprocess
-    result = subprocess.run(
-        [sys.executable, os.path.join(os.path.dirname(__file__), 'fix_opencv_preload.py')],
-        capture_output=True,
-        text=True,
-        timeout=30
-    )
-    if result.returncode == 0:
-        logger.info("✅ OpenCV preload fix completed")
-        if result.stdout:
-            logger.info(result.stdout)
-    else:
-        logger.warning(f"⚠️  OpenCV preload fix had issues: {result.stderr}")
-except Exception as e:
-    logger.warning(f"⚠️  Could not run OpenCV preload fix: {e}")
+# NOTE: Moved OpenCV checks to lazy initialization to speed up startup
+# This prevents Gunicorn timeout on app boot
+logger.info("⏭️  OpenCV checks deferred to first use (lazy loading)")
 
 try:
     from tyre_damage_detector import get_detector as get_tyre_detector
