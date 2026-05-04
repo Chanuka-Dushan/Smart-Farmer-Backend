@@ -4,27 +4,27 @@ region: nyc
 services:
   - name: backend
     # Build and run from root directory
-    build_command: pip install --upgrade pip && pip install -r requirements.txt
-    run_command: python -m uvicorn main:app --host 0.0.0.0 --port 8080
+    build_command: pip install --upgrade pip setuptools wheel && pip install -r requirements.txt
+    run_command: gunicorn -w 4 -b 0.0.0.0:8080 --timeout 120 --access-logfile - --error-logfile - main:app
     
     # Environment
     environment_slug: python
     
     # Instance configuration
     instance_count: 1
-    instance_size_slug: basic-xxs
+    instance_size_slug: basic-xs
     
     # HTTP configuration
     http_port: 8080
     
-    # Health check
+    # Health check - adjusted for stability
     health_check:
       http_path: /
-      initial_delay_seconds: 30
+      initial_delay_seconds: 60
       period_seconds: 10
-      timeout_seconds: 5
+      timeout_seconds: 10
       success_threshold: 1
-      failure_threshold: 5
+      failure_threshold: 3
     
     # Environment variables
     envs:
@@ -32,3 +32,43 @@ services:
         value: "8080"
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: PYTHONDONTWRITEBYTECODE
+        value: "1"
+      - key: ENVIRONMENT
+        value: "production"
+      - key: DATABASE_URL
+        scope: RUN_AND_BUILD_TIME
+      - key: SECRET_KEY
+        scope: RUN_AND_BUILD_TIME
+      - key: FIREBASE_PROJECT_ID
+        scope: RUN_AND_BUILD_TIME
+      - key: FIREBASE_PRIVATE_KEY_ID
+        scope: RUN_AND_BUILD_TIME
+      - key: FIREBASE_PRIVATE_KEY
+        scope: RUN_AND_BUILD_TIME
+      - key: FIREBASE_CLIENT_EMAIL
+        scope: RUN_AND_BUILD_TIME
+      - key: FIREBASE_CLIENT_ID
+        scope: RUN_AND_BUILD_TIME
+      - key: FIREBASE_AUTH_URI
+        scope: RUN_AND_BUILD_TIME
+      - key: FIREBASE_TOKEN_URI
+        scope: RUN_AND_BUILD_TIME
+      - key: SPACES_REGION
+        scope: RUN_AND_BUILD_TIME
+      - key: SPACES_BUCKET
+        scope: RUN_AND_BUILD_TIME
+      - key: SPACES_KEY
+        scope: RUN_AND_BUILD_TIME
+      - key: SPACES_SECRET
+        scope: RUN_AND_BUILD_TIME
+      - key: SMTP_SERVER
+        scope: RUN_AND_BUILD_TIME
+      - key: SMTP_PORT
+        scope: RUN_AND_BUILD_TIME
+      - key: SMTP_USERNAME
+        scope: RUN_AND_BUILD_TIME
+      - key: SMTP_PASSWORD
+        scope: RUN_AND_BUILD_TIME
+      - key: SENDER_EMAIL
+        scope: RUN_AND_BUILD_TIME

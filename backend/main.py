@@ -33,6 +33,7 @@ import json
 from routes.blockchain_routes import router as blockchain_routes
 from routes.parts_routes import router as parts_routes
 from routes.transfer_routes import router as transfer_routes
+from routes.tyre_routes import router as tyre_router
 from routes.vector_admin import router as vector_admin_router
 from routes.recommender import router as recommender_router
 from routes.search import router as search_router
@@ -81,56 +82,9 @@ get_tyre_predictor = None
 get_voice_handler = None  # Realtime voice handler
 
 # CRITICAL: Fix OpenCV before importing tyre modules
-# Check OpenCV installation at startup
-try:
-    logger.info("🔍 Checking OpenCV installation...")
-    import subprocess
-    result = subprocess.run(
-        [sys.executable, "-c", "import sys; [print(p) for p in sys.path if 'opencv' in p.lower()]"],
-        capture_output=True,
-        text=True,
-        timeout=5
-    )
-    
-    # List installed opencv packages
-    pip_result = subprocess.run(
-        [sys.executable, "-m", "pip", "list"],
-        capture_output=True,
-        text=True,
-        timeout=10
-    )
-    opencv_packages = [line for line in pip_result.stdout.split('\n') if 'opencv' in line.lower()]
-    if opencv_packages:
-        logger.info(f"📦 Installed OpenCV packages:")
-        for pkg in opencv_packages:
-            logger.info(f"   {pkg}")
-            if 'opencv-python ' in pkg and 'headless' not in pkg:
-                logger.error(f"❌ CRITICAL: GUI opencv-python detected: {pkg}")
-                logger.error("❌ This will cause libGL.so.1 errors!")
-    else:
-        logger.warning("⚠️  No OpenCV packages found!")
-        
-except Exception as e:
-    logger.warning(f"⚠️  OpenCV check failed: {e}")
-
-# Run opencv preload fix
-try:
-    logger.info("🔧 Running OpenCV preload fix...")
-    import subprocess
-    result = subprocess.run(
-        [sys.executable, os.path.join(os.path.dirname(__file__), 'fix_opencv_preload.py')],
-        capture_output=True,
-        text=True,
-        timeout=30
-    )
-    if result.returncode == 0:
-        logger.info("✅ OpenCV preload fix completed")
-        if result.stdout:
-            logger.info(result.stdout)
-    else:
-        logger.warning(f"⚠️  OpenCV preload fix had issues: {result.stderr}")
-except Exception as e:
-    logger.warning(f"⚠️  Could not run OpenCV preload fix: {e}")
+# NOTE: Moved OpenCV checks to lazy initialization to speed up startup
+# This prevents Gunicorn timeout on app boot
+logger.info("⏭️  OpenCV checks deferred to first use (lazy loading)")
 
 try:
     from tyre_damage_detector import get_detector as get_tyre_detector
@@ -933,6 +887,7 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
 # --- 5. API Endpoints ---
 
 app = FastAPI(
+    root_path="/backend",
     swagger_ui_parameters={
         "defaultModelsExpandDepth": -1
     }
@@ -940,11 +895,15 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
-
-    #allow_origins=["farmerlk.me", "www.farmerlk.me", "http://localhost:3000", "http://localhost", "http://localhost:8000"],
-
+    allow_origins=[
+        "https://farmerlk.me",
+        "https://www.farmerlk.me",
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://localhost",
+        "https://smart-farmer-39b56.web.app",
+        "*"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -968,6 +927,18 @@ app.include_router(rf_test_router)
 app.include_router(blockchain_routes)
 app.include_router(parts_routes)
 app.include_router(transfer_routes)
+# Tyre inspection API
+try:
+    app.include_router(tyre_router, prefix="/api/tyre")
+    # Initialize tyre models once at startup
+    try:
+        from services.tyre_service import get_tyre_service
+        get_tyre_service()
+        logger.info("✓ TyreService initialized at startup")
+    except Exception as e:
+        logger.warning(f"Could not initialize TyreService at startup: {e}")
+except Exception as e:
+    logger.warning(f"Failed to register tyre router: {e}")
 
 
 # --- AI Knowledge Integration ---
@@ -1155,8 +1126,7 @@ async def predict_lifecycle(
                             "severe": 0.75      # 75% damage
                         }
                         visual_damage = severity_map.get(severity, 0.35)
-                    
-                        confidence = 0.79 + (detection_confidence * 0.04)  # Maps to 79-83%
+                        confidence = detection_confidence
                         analysis_model = f"YOLOv8 Detection - {damage_type} ({severity})"
                         logger.info(f"🚗 Tyre damage detected: {severity} - {int(visual_damage*100)}% damage")
                     else:

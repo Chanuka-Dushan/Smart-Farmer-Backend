@@ -4,6 +4,7 @@ Detects various types of tyre damage including treadwear, cracks, bulging, etc.
 """
 
 import logging
+import math
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 import numpy as np
@@ -11,6 +12,44 @@ from datetime import datetime
 import base64
 
 logger = logging.getLogger(__name__)
+
+
+def calculate_rul(crack_pixels: int, roi_pixels: int) -> Dict:
+    """
+    Calculate Remaining Useful Life (RUL) from crack and ROI pixel counts.
+
+    RUL = 30 * exp(-46 * S)
+    where S = crack_pixels / roi_pixels
+    """
+    crack_pixels = int(crack_pixels or 0)
+    roi_pixels = int(roi_pixels or 0)
+
+    severity_ratio = float(crack_pixels) / float(roi_pixels) if roi_pixels > 0 else 0.0
+    severity_percent = severity_ratio * 100.0
+
+    rul_value = 30.0 * math.exp(-46.0 * severity_ratio)
+    rul_value = max(0.0, min(30.0, rul_value))
+    rul_months = int(round(rul_value))
+
+    if severity_ratio < 0.02:
+        severity_label = "Minor Crack"
+        message = "Minor crack detected. Monitor the tyre regularly."
+    elif severity_ratio < 0.05:
+        severity_label = "Moderate Crack"
+        message = "Moderate crack detected. Schedule tyre maintenance soon."
+    else:
+        severity_label = "Severe Crack"
+        message = "Severe crack detected. Replace the tyre as soon as possible."
+
+    return {
+        "crack_pixels": crack_pixels,
+        "roi_pixels": roi_pixels,
+        "severity_ratio": float(severity_ratio),
+        "severity_percent": float(severity_percent),
+        "rul_months": rul_months,
+        "severity_label": severity_label,
+        "message": message,
+    }
 
 # Safe OpenCV import (cloud compatible)
 try:
@@ -52,14 +91,33 @@ class TyreDamageDetector:
     DAMAGE_SEVERITY = {
         "crack_1": {"severity": "minor", "lifespan_reduction": 0.15},
         "crack_2": {"severity": "severe", "lifespan_reduction": 0.50},
+        "crack": {"severity": "moderate", "lifespan_reduction": 0.30},
         "treadwear_1": {"severity": "minor", "lifespan_reduction": 0.10},
         "treadwear_2": {"severity": "moderate", "lifespan_reduction": 0.30},
+        "treadwear": {"severity": "moderate", "lifespan_reduction": 0.25},
+        "bulge": {"severity": "severe", "lifespan_reduction": 0.55},
+        "cut": {"severity": "moderate", "lifespan_reduction": 0.35},
+        "puncture": {"severity": "severe", "lifespan_reduction": 0.60},
     }
+
+    @staticmethod
+    def _fallback_damage_info(class_name: str) -> Dict[str, float]:
+        """Infer severity for model labels not present in DAMAGE_SEVERITY."""
+        name = (class_name or "").lower()
+        if "crack" in name:
+            return {"severity": "moderate", "lifespan_reduction": 0.30}
+        if "tread" in name or "wear" in name:
+            return {"severity": "moderate", "lifespan_reduction": 0.25}
+        if "bulge" in name or "puncture" in name:
+            return {"severity": "severe", "lifespan_reduction": 0.60}
+        if "cut" in name:
+            return {"severity": "moderate", "lifespan_reduction": 0.35}
+        return {"severity": "moderate", "lifespan_reduction": 0.25}
 
     def __init__(self, model_path: str = None):
 
         if model_path is None:
-            model_path = Path(__file__).parent / "models" / "tyremodel" / "tyremodel.pt"
+            model_path = Path(__file__).parent / "models" / "tyremodel" / "tyre_seg_best.pt"
 
         self.model_path = Path(model_path)
         self.model = None
@@ -75,18 +133,58 @@ class TyreDamageDetector:
         try:
             if not self.model_path.exists():
                 logger.error(f"❌ Model file not found: {self.model_path}")
+                logger.error(f"   Expected at: {self.model_path.absolute()}")
                 return
 
             logger.info(f"📦 Loading YOLO model from: {self.model_path}")
+            logger.info(f"   File size: {self.model_path.stat().st_size / 1024 / 1024:.2f} MB")
 
             self.model = YOLO(str(self.model_path))
             self.model_loaded = True
 
             logger.info("✅ YOLO model loaded successfully")
+            logger.info(f"   Model type: {type(self.model)}")
+            logger.info(f"   Model task: {self.model.task if hasattr(self.model, 'task') else 'N/A'}")
 
         except Exception as e:
             logger.error(f"❌ Failed to load YOLO model: {e}")
             self.model_loaded = False
+
+    def _extract_roi_crack_pixels(
+        self,
+        image: np.ndarray,
+        masks: Optional[np.ndarray]
+    ) -> Tuple[int, int]:
+        """
+        Count crack pixels within a fixed circular ROI.
+
+        Returns:
+            Tuple of (crack_pixels, roi_pixels)
+        """
+        h, w = image.shape[:2]
+        cx, cy = w / 2.0, h / 2.0
+        radius = 0.4 * w
+
+        y, x = np.ogrid[:h, :w]
+        roi_mask = (x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2
+        roi_pixels = int(np.sum(roi_mask))
+
+        crack_pixels = 0
+        if masks is None or len(masks) == 0:
+            return crack_pixels, roi_pixels
+
+        roi_mask_uint8 = roi_mask.astype(np.uint8)
+
+        for mask in masks:
+            if mask.shape != (h, w):
+                mask_resized = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
+            else:
+                mask_resized = mask
+
+            binary_mask = (mask_resized > 0.5).astype(np.uint8)
+            crack_pixels += int(np.sum(binary_mask * roi_mask_uint8))
+
+        return crack_pixels, roi_pixels
 
     def detect_damage(
         self,
@@ -96,34 +194,45 @@ class TyreDamageDetector:
     ) -> Dict:
 
         if not self.model_loaded or not YOLO_AVAILABLE:
+            logger.warning("⚪ Model not loaded, running in simulation mode")
             return self._simulate_detection(image_path)
 
         try:
-
             logger.info(f"🔍 Detecting damage in: {image_path}")
+            logger.info(f"   Confidence threshold: {confidence_threshold}")
+
+            # Read image for ROI/crack pixel counting
+            image = cv2.imread(image_path)
+            if image is None:
+                raise ValueError(f"Failed to read image: {image_path}")
 
             results = self.model(image_path, conf=confidence_threshold, verbose=False)
 
             detections = []
             highest_severity_damage = None
             max_severity_score = 0.0
+            
+            # Extract masks from the segmentation model output
+            masks = None
 
             for result in results:
-
                 boxes = result.boxes
+                logger.info(f"   Boxes found: {len(boxes)}")
+
+                if hasattr(result, 'masks') and result.masks is not None:
+                    masks = result.masks.data.cpu().numpy()
+                    logger.info(f"   Segmentation masks found: {masks.shape}")
 
                 for box in boxes:
-
                     class_id = int(box.cls[0])
                     confidence = float(box.conf[0])
                     bbox = box.xyxy[0].cpu().numpy().tolist()
 
                     class_name = result.names[class_id]
 
-                    damage_info = self.DAMAGE_SEVERITY.get(
-                        class_name,
-                        {"severity": "unknown", "lifespan_reduction": 0.5}
-                    )
+                    damage_info = self.DAMAGE_SEVERITY.get(class_name)
+                    if damage_info is None:
+                        damage_info = self._fallback_damage_info(class_name)
 
                     detection = {
                         "damage_type": class_name,
@@ -139,12 +248,32 @@ class TyreDamageDetector:
                     }
 
                     detections.append(detection)
+                    logger.info(f"   ✓ Detected: {class_name} (confidence: {confidence:.3f}, severity: {damage_info['severity']})")
 
                     severity_score = damage_info["lifespan_reduction"] * confidence
 
                     if severity_score > max_severity_score:
                         max_severity_score = severity_score
                         highest_severity_damage = detection
+
+            crack_pixels, roi_pixels = self._extract_roi_crack_pixels(image, masks)
+            rul_data = calculate_rul(crack_pixels, roi_pixels)
+
+            # If detector label mapping is generic, align primary damage severity
+            # with pixel-based RUL severity to avoid static impact values.
+            if highest_severity_damage is not None:
+                label = rul_data["severity_label"].lower()
+                if "minor" in label:
+                    highest_severity_damage["severity"] = "minor"
+                elif "moderate" in label:
+                    highest_severity_damage["severity"] = "moderate"
+                elif "severe" in label:
+                    highest_severity_damage["severity"] = "severe"
+
+                highest_severity_damage["lifespan_reduction"] = min(
+                    1.0,
+                    max(0.0, float(rul_data["severity_percent"]) / 100.0)
+                )
 
             annotated_path = None
             annotated_base64 = None
@@ -160,11 +289,21 @@ class TyreDamageDetector:
                 "primary_damage": highest_severity_damage,
                 "annotated_image_path": annotated_path,
                 "annotated_image_base64": annotated_base64,
-                "model": "YOLOv8",
+                "model": "YOLOv8 (tyre_seg_best)",
+                "crack_pixels": rul_data["crack_pixels"],
+                "roi_pixels": rul_data["roi_pixels"],
+                "severity_ratio": rul_data["severity_ratio"],
+                "severity_percent": rul_data["severity_percent"],
+                "rul_months": rul_data["rul_months"],
+                "rul": rul_data["rul_months"],
+                "severity_label": rul_data["severity_label"],
+                "message": rul_data["message"],
                 "timestamp": datetime.utcnow().isoformat()
             }
 
             logger.info(f"✅ Detection complete: {len(detections)} damage(s) found")
+            logger.info(f"   Primary damage: {highest_severity_damage['damage_type'] if highest_severity_damage else 'None'}")
+            logger.info(f"   RUL (months): {rul_data['rul_months']}")
 
             return response
 
@@ -199,8 +338,59 @@ class TyreDamageDetector:
 
             save_path = annotated_dir / filename
 
-            # Generate annotated image
-            annotated_img = result.plot()
+            # Generate a mask-only crack overlay without confidence text.
+            annotated_img = cv2.imread(original_path)
+            if annotated_img is None:
+                annotated_img = result.plot(conf=False, labels=False)
+            else:
+                masks_obj = getattr(result, "masks", None)
+                masks_data = getattr(masks_obj, "data", None) if masks_obj is not None else None
+
+                if masks_data is not None:
+                    try:
+                        masks = masks_data.cpu().numpy()
+                    except Exception:
+                        masks = np.array(masks_data)
+
+                    if masks.ndim == 2:
+                        masks = np.expand_dims(masks, axis=0)
+
+                    overlay = annotated_img.copy()
+                    h, w = annotated_img.shape[:2]
+
+                    for mask in masks:
+                        if mask.shape != (h, w):
+                            mask_resized = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
+                        else:
+                            mask_resized = mask
+
+                        binary_mask = (mask_resized > 0.5).astype(np.uint8)
+                        if not np.any(binary_mask):
+                            continue
+
+                        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        if not contours:
+                            continue
+
+                        cv2.drawContours(overlay, contours, -1, (0, 0, 255), thickness=cv2.FILLED)
+
+                        x, y, width, height = cv2.boundingRect(np.vstack(contours))
+                        text_x = max(8, x)
+                        text_y = max(24, y - 10)
+                        cv2.putText(
+                            annotated_img,
+                            "crack",
+                            (text_x, text_y),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (0, 0, 255),
+                            2,
+                            cv2.LINE_AA,
+                        )
+
+                    annotated_img = cv2.addWeighted(overlay, 0.28, annotated_img, 0.72, 0)
+                else:
+                    annotated_img = result.plot(conf=False, labels=False)
 
             # Save to filesystem
             cv2.imwrite(str(save_path), annotated_img)
@@ -222,6 +412,8 @@ class TyreDamageDetector:
     def _simulate_detection(self, image_path: str) -> Dict:
 
         logger.warning("⚪ Running in simulation mode")
+
+        rul_data = calculate_rul(0, 0)
 
         return {
             "success": True,
@@ -249,6 +441,14 @@ class TyreDamageDetector:
             },
             "annotated_image_path": None,
             "model": "Simulation Mode",
+            "crack_pixels": rul_data["crack_pixels"],
+            "roi_pixels": rul_data["roi_pixels"],
+            "severity_ratio": rul_data["severity_ratio"],
+            "severity_percent": rul_data["severity_percent"],
+            "rul_months": rul_data["rul_months"],
+            "rul": rul_data["rul_months"],
+            "severity_label": rul_data["severity_label"],
+            "message": rul_data["message"],
             "timestamp": datetime.utcnow().isoformat()
         }
 
