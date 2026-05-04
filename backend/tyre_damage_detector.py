@@ -59,7 +59,7 @@ class TyreDamageDetector:
     def __init__(self, model_path: str = None):
 
         if model_path is None:
-            model_path = Path(__file__).parent / "models" / "tyremodel" / "tyremodel.pt"
+            model_path = Path(__file__).parent / "models" / "tyremodel" / "tyre_seg_best.pt"
 
         self.model_path = Path(model_path)
         self.model = None
@@ -75,14 +75,18 @@ class TyreDamageDetector:
         try:
             if not self.model_path.exists():
                 logger.error(f"❌ Model file not found: {self.model_path}")
+                logger.error(f"   Expected at: {self.model_path.absolute()}")
                 return
 
             logger.info(f"📦 Loading YOLO model from: {self.model_path}")
+            logger.info(f"   File size: {self.model_path.stat().st_size / 1024 / 1024:.2f} MB")
 
             self.model = YOLO(str(self.model_path))
             self.model_loaded = True
 
             logger.info("✅ YOLO model loaded successfully")
+            logger.info(f"   Model type: {type(self.model)}")
+            logger.info(f"   Model task: {self.model.task if hasattr(self.model, 'task') else 'N/A'}")
 
         except Exception as e:
             logger.error(f"❌ Failed to load YOLO model: {e}")
@@ -96,11 +100,13 @@ class TyreDamageDetector:
     ) -> Dict:
 
         if not self.model_loaded or not YOLO_AVAILABLE:
+            logger.warning("⚪ Model not loaded, running in simulation mode")
             return self._simulate_detection(image_path)
 
         try:
 
             logger.info(f"🔍 Detecting damage in: {image_path}")
+            logger.info(f"   Confidence threshold: {confidence_threshold}")
 
             results = self.model(image_path, conf=confidence_threshold, verbose=False)
 
@@ -111,6 +117,7 @@ class TyreDamageDetector:
             for result in results:
 
                 boxes = result.boxes
+                logger.info(f"   Boxes found: {len(boxes)}")
 
                 for box in boxes:
 
@@ -139,6 +146,7 @@ class TyreDamageDetector:
                     }
 
                     detections.append(detection)
+                    logger.info(f"   ✓ Detected: {class_name} (confidence: {confidence:.3f}, severity: {damage_info['severity']})")
 
                     severity_score = damage_info["lifespan_reduction"] * confidence
 
@@ -160,11 +168,12 @@ class TyreDamageDetector:
                 "primary_damage": highest_severity_damage,
                 "annotated_image_path": annotated_path,
                 "annotated_image_base64": annotated_base64,
-                "model": "YOLOv8",
+                "model": "YOLOv8 (tyre_seg_best)",
                 "timestamp": datetime.utcnow().isoformat()
             }
 
             logger.info(f"✅ Detection complete: {len(detections)} damage(s) found")
+            logger.info(f"   Primary damage: {highest_severity_damage['damage_type'] if highest_severity_damage else 'None'}")
 
             return response
 
