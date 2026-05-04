@@ -30,9 +30,45 @@ MONTH_TO_SEASON = {
 }
 
 
+# Temporary compatibility knowledge base.
+# You can later replace this with a database compatibility table.
+COMPATIBLE_MODEL_GROUPS = [
+    ["TAFE 7250", "MF 240", "TAFE 45DI"],
+]
+
+
+def normalize_text(value):
+    return str(value or "").strip().lower()
+
+
+def get_compatible_model_names(model_name: str):
+    """
+    Returns compatible model names for the selected model.
+
+    Example:
+    TAFE 7250 -> MF 240, TAFE 45DI
+    MF 240 -> TAFE 7250, TAFE 45DI
+    TAFE 45DI -> TAFE 7250, MF 240
+    """
+    normalized_model_name = normalize_text(model_name)
+
+    for group in COMPATIBLE_MODEL_GROUPS:
+        normalized_group = [normalize_text(name) for name in group]
+
+        if normalized_model_name in normalized_group:
+            return [
+                name
+                for name in group
+                if normalize_text(name) != normalized_model_name
+            ]
+
+    return []
+
+
 def get_season_from_month(month: str):
     if not month:
         return None
+
     return MONTH_TO_SEASON.get(month.strip().capitalize())
 
 
@@ -41,6 +77,7 @@ def exponential_smoothing(history_values, alpha=0.4):
         return None
 
     forecast = history_values[0]
+
     for demand in history_values[1:]:
         forecast = alpha * demand + (1 - alpha) * forecast
 
@@ -201,26 +238,31 @@ def predict_inventory_demand(
         raise ValueError("Invalid season")
 
     stage_obj = None
+
     if stage:
         stage_obj = (
             db.query(InventoryStage)
             .filter(InventoryStage.name.ilike(stage))
             .first()
         )
+
         if not stage_obj:
             raise ValueError("Invalid stage")
 
     category_obj = None
+
     if category:
         category_obj = (
             db.query(InventoryMachineCategory)
             .filter(InventoryMachineCategory.name.ilike(category))
             .first()
         )
+
         if not category_obj:
             raise ValueError("Invalid category")
 
     selected_model = None
+
     if model:
         selected_model = (
             db.query(InventoryMachineModel)
@@ -312,14 +354,32 @@ def get_high_demand_parts(db: Session):
     results = []
 
     for mapping in mappings:
-        machine_model = db.query(InventoryMachineModel).filter_by(id=mapping.model_id).first()
-        part = db.query(InventoryPart).filter_by(id=mapping.part_id).first()
+        machine_model = (
+            db.query(InventoryMachineModel)
+            .filter_by(id=mapping.model_id)
+            .first()
+        )
+
+        part = (
+            db.query(InventoryPart)
+            .filter_by(id=mapping.part_id)
+            .first()
+        )
 
         if not machine_model or not part:
             continue
 
-        brand = db.query(InventoryBrand).filter_by(id=machine_model.brand_id).first()
-        category = db.query(InventoryMachineCategory).filter_by(id=machine_model.category_id).first()
+        brand = (
+            db.query(InventoryBrand)
+            .filter_by(id=machine_model.brand_id)
+            .first()
+        )
+
+        category = (
+            db.query(InventoryMachineCategory)
+            .filter_by(id=machine_model.category_id)
+            .first()
+        )
 
         results.append({
             "category": category.name if category else None,
@@ -384,7 +444,11 @@ def flatten_prediction_output(prediction_result):
     return flat_list
 
 
-def get_part_details_by_model_and_part(db: Session, model_name: str, part_name: str):
+def get_part_details_by_model_and_part(
+    db: Session,
+    model_name: str,
+    part_name: str,
+):
     machine_model = (
         db.query(InventoryMachineModel)
         .filter(InventoryMachineModel.model_name.ilike(model_name))
@@ -406,7 +470,11 @@ def get_part_details_by_model_and_part(db: Session, model_name: str, part_name: 
     return machine_model, part
 
 
-def get_substitute_suggestions(db: Session, model_name: str, part_name: str):
+def get_substitute_suggestions(
+    db: Session,
+    model_name: str,
+    part_name: str,
+):
     machine_model, original_part = get_part_details_by_model_and_part(
         db=db,
         model_name=model_name,
@@ -420,46 +488,77 @@ def get_substitute_suggestions(db: Session, model_name: str, part_name: str):
             "reason": "Model or part not found in inventory dataset",
         }
 
-    mappings = (
-        db.query(InventoryModelPartMapping)
-        .filter(InventoryModelPartMapping.model_id == machine_model.id)
-        .all()
-    )
+    compatible_model_names = get_compatible_model_names(model_name)
+
+    if not compatible_model_names:
+        return {
+            "available": False,
+            "suggestedParts": [],
+            "reason": "No compatible model group found for this model",
+        }
 
     suggestions = []
+    seen_models = set()
 
-    for mapping in mappings:
-        candidate_part = (
-            db.query(InventoryPart)
-            .filter(InventoryPart.id == mapping.part_id)
+    for compatible_model_name in compatible_model_names:
+        compatible_model = (
+            db.query(InventoryMachineModel)
+            .filter(InventoryMachineModel.model_name.ilike(compatible_model_name))
             .first()
         )
 
-        if not candidate_part:
+        if not compatible_model:
             continue
 
-        if candidate_part.id == original_part.id:
+        if compatible_model.id in seen_models:
             continue
 
-        if candidate_part.part_type != original_part.part_type:
+        # Important:
+        # Only suggest if the compatible model has the SAME part.
+        mapping = (
+            db.query(InventoryModelPartMapping)
+            .filter(
+                InventoryModelPartMapping.model_id == compatible_model.id,
+                InventoryModelPartMapping.part_id == original_part.id,
+            )
+            .first()
+        )
+
+        if not mapping:
             continue
 
-        if mapping.criticality not in ["HIGH", "MEDIUM"]:
-            continue
+        seen_models.add(compatible_model.id)
+
+        brand = (
+            db.query(InventoryBrand)
+            .filter(InventoryBrand.id == compatible_model.brand_id)
+            .first()
+        )
+
+        category = (
+            db.query(InventoryMachineCategory)
+            .filter(InventoryMachineCategory.id == compatible_model.category_id)
+            .first()
+        )
 
         suggestions.append({
-            "partId": candidate_part.id,
-            "partName": candidate_part.name,
-            "partType": candidate_part.part_type,
+            "partId": original_part.id,
+            "partName": original_part.name,
+            "partType": original_part.part_type,
+            "modelId": compatible_model.id,
+            "modelName": compatible_model.model_name,
+            "brand": brand.name if brand else None,
+            "category": category.name if category else None,
             "criticality": mapping.criticality,
-            "reason": "Same part type and compatible with selected model",
+            "compatibilityType": "Compatible model group",
+            "reason": "Same part available in a compatible machine model",
         })
 
     return {
         "available": len(suggestions) > 0,
         "suggestedParts": suggestions[:3],
-        "reason": "Substitutes found based on same model, same part type, and compatible mapping"
-        if suggestions else "No suitable substitute found for this model and part type",
+        "reason": "Substitutes found using same part in compatible machine models"
+        if suggestions else "No same-part substitute found in compatible models",
     }
 
 
@@ -467,22 +566,22 @@ def analyze_stock(predicted_items, vendor_stock):
     stock_lookup = {}
 
     for item in vendor_stock:
-        key = (
-            item.get("modelName", "").lower().strip(),
-            item.get("partName", "").lower().strip(),
-        )
-        stock_lookup[key] = item.get("currentStock", 0)
+        model_name = normalize_text(item.get("modelName"))
+        part_name = normalize_text(item.get("partName"))
+
+        key = (model_name, part_name)
+        stock_lookup[key] = int(item.get("currentStock", 0) or 0)
 
     analysis = []
 
     for item in predicted_items:
-        model_name = item.get("modelName")
-        part_name = item.get("partName")
-        forecast_demand = item.get("forecastDemand", 0)
+        model_name = str(item.get("modelName", "") or "").strip()
+        part_name = str(item.get("partName", "") or "").strip()
+        forecast_demand = int(item.get("forecastDemand", 0) or 0)
 
         key = (
-            model_name.lower().strip(),
-            part_name.lower().strip(),
+            normalize_text(model_name),
+            normalize_text(part_name),
         )
 
         current_stock = stock_lookup.get(key, 0)

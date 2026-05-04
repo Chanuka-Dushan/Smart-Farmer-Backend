@@ -38,7 +38,7 @@ def get_inventory_db():
 
 router = APIRouter(
     prefix="/api/inventory",
-    tags=["Inventory Forecasting"]
+    tags=["Inventory Forecasting"],
 )
 
 
@@ -59,6 +59,47 @@ class StockAnalyzeRequest(BaseModel):
     vendorStock: List[VendorStockItem]
 
 
+def normalize_excel_header(value):
+    """
+    Converts Excel headers into a comparable format.
+
+    Examples:
+    'modelName'     -> 'modelname'
+    'Model Name'    -> 'modelname'
+    'model_name'    -> 'modelname'
+    ' modelName '   -> 'modelname'
+    """
+    return (
+        str(value or "")
+        .strip()
+        .lower()
+        .replace(" ", "")
+        .replace("_", "")
+        .replace("-", "")
+    )
+
+
+def find_header_index(normalized_headers, aliases):
+    for alias in aliases:
+        normalized_alias = normalize_excel_header(alias)
+        if normalized_alias in normalized_headers:
+            return normalized_headers.index(normalized_alias)
+    return None
+
+
+def parse_int_safe(value):
+    try:
+        if value is None:
+            return 0
+
+        if isinstance(value, float):
+            return int(value)
+
+        return int(str(value).strip())
+    except Exception:
+        return 0
+
+
 @router.get("/predict")
 def predict_inventory(
     month: Optional[str] = None,
@@ -68,7 +109,7 @@ def predict_inventory(
     model: Optional[str] = None,
     type: Optional[str] = None,
     flatten: bool = False,
-    db: Session = Depends(get_inventory_db)
+    db: Session = Depends(get_inventory_db),
 ):
     try:
         result = predict_inventory_demand(
@@ -90,7 +131,7 @@ def predict_inventory(
                     "category": result.get("category"),
                     "model": result.get("model"),
                 },
-                "predictedItems": flatten_prediction_output(result)
+                "predictedItems": flatten_prediction_output(result),
             }
 
         return result
@@ -105,7 +146,7 @@ def predict_inventory(
 @router.post("/stock/analyze")
 def stock_analyze(
     request: StockAnalyzeRequest,
-    db: Session = Depends(get_inventory_db)
+    db: Session = Depends(get_inventory_db),
 ):
     try:
         predicted_items = [item.dict() for item in request.predictedItems]
@@ -114,7 +155,7 @@ def stock_analyze(
         return analyze_stock_with_substitutes(
             db=db,
             predicted_items=predicted_items,
-            vendor_stock=vendor_stock
+            vendor_stock=vendor_stock,
         )
 
     except Exception as e:
@@ -125,34 +166,78 @@ def stock_analyze(
 async def stock_analyze_excel(
     file: UploadFile = File(...),
     predictedItems: str = Form(...),
-    db: Session = Depends(get_inventory_db)
+    db: Session = Depends(get_inventory_db),
 ):
     try:
         predicted_items = json.loads(predictedItems)
 
-        workbook = openpyxl.load_workbook(file.file)
+        try:
+            workbook = openpyxl.load_workbook(file.file, data_only=True)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid Excel file. Please upload a valid .xlsx file.",
+            )
+
         sheet = workbook.active
 
-        headers = [cell.value for cell in sheet[1]]
-        required_headers = ["modelName", "partName", "currentStock"]
+        raw_headers = [cell.value for cell in sheet[1]]
+        normalized_headers = [
+            normalize_excel_header(header) for header in raw_headers
+        ]
 
-        for header in required_headers:
-            if header not in headers:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Missing required column: {header}"
-                )
+        print("EXCEL FILE NAME:", file.filename)
+        print("EXCEL RAW HEADERS:", raw_headers)
+        print("EXCEL NORMALIZED HEADERS:", normalized_headers)
 
-        model_idx = headers.index("modelName")
-        part_idx = headers.index("partName")
-        stock_idx = headers.index("currentStock")
+        model_idx = find_header_index(
+            normalized_headers,
+            ["modelName", "Model Name", "model_name", "model", "machineModel"],
+        )
+
+        part_idx = find_header_index(
+            normalized_headers,
+            ["partName", "Part Name", "part_name", "part"],
+        )
+
+        stock_idx = find_header_index(
+            normalized_headers,
+            [
+                "currentStock",
+                "Current Stock",
+                "current_stock",
+                "stock",
+                "quantity",
+                "qty",
+            ],
+        )
+
+        missing_columns = []
+
+        if model_idx is None:
+            missing_columns.append("modelName")
+
+        if part_idx is None:
+            missing_columns.append("partName")
+
+        if stock_idx is None:
+            missing_columns.append("currentStock")
+
+        if missing_columns:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Missing required column: {', '.join(missing_columns)}. "
+                    f"Found headers: {raw_headers}"
+                ),
+            )
 
         vendor_stock = []
 
         for row in sheet.iter_rows(min_row=2, values_only=True):
-            model_name = row[model_idx]
-            part_name = row[part_idx]
-            current_stock = row[stock_idx]
+            model_name = row[model_idx] if model_idx < len(row) else None
+            part_name = row[part_idx] if part_idx < len(row) else None
+            current_stock = row[stock_idx] if stock_idx < len(row) else None
 
             if not model_name or not part_name:
                 continue
@@ -160,17 +245,29 @@ async def stock_analyze_excel(
             vendor_stock.append({
                 "modelName": str(model_name).strip(),
                 "partName": str(part_name).strip(),
-                "currentStock": int(current_stock or 0),
+                "currentStock": parse_int_safe(current_stock),
             })
+
+        if not vendor_stock:
+            raise HTTPException(
+                status_code=400,
+                detail="No valid stock rows found in Excel file.",
+            )
 
         return analyze_stock_with_substitutes(
             db=db,
             predicted_items=predicted_items,
-            vendor_stock=vendor_stock
+            vendor_stock=vendor_stock,
         )
 
     except HTTPException:
         raise
+
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid predictedItems JSON data.",
+        )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
