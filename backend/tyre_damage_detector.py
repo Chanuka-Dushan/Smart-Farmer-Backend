@@ -91,9 +91,28 @@ class TyreDamageDetector:
     DAMAGE_SEVERITY = {
         "crack_1": {"severity": "minor", "lifespan_reduction": 0.15},
         "crack_2": {"severity": "severe", "lifespan_reduction": 0.50},
+        "crack": {"severity": "moderate", "lifespan_reduction": 0.30},
         "treadwear_1": {"severity": "minor", "lifespan_reduction": 0.10},
         "treadwear_2": {"severity": "moderate", "lifespan_reduction": 0.30},
+        "treadwear": {"severity": "moderate", "lifespan_reduction": 0.25},
+        "bulge": {"severity": "severe", "lifespan_reduction": 0.55},
+        "cut": {"severity": "moderate", "lifespan_reduction": 0.35},
+        "puncture": {"severity": "severe", "lifespan_reduction": 0.60},
     }
+
+    @staticmethod
+    def _fallback_damage_info(class_name: str) -> Dict[str, float]:
+        """Infer severity for model labels not present in DAMAGE_SEVERITY."""
+        name = (class_name or "").lower()
+        if "crack" in name:
+            return {"severity": "moderate", "lifespan_reduction": 0.30}
+        if "tread" in name or "wear" in name:
+            return {"severity": "moderate", "lifespan_reduction": 0.25}
+        if "bulge" in name or "puncture" in name:
+            return {"severity": "severe", "lifespan_reduction": 0.60}
+        if "cut" in name:
+            return {"severity": "moderate", "lifespan_reduction": 0.35}
+        return {"severity": "moderate", "lifespan_reduction": 0.25}
 
     def __init__(self, model_path: str = None):
 
@@ -211,10 +230,9 @@ class TyreDamageDetector:
 
                     class_name = result.names[class_id]
 
-                    damage_info = self.DAMAGE_SEVERITY.get(
-                        class_name,
-                        {"severity": "unknown", "lifespan_reduction": 0.5}
-                    )
+                    damage_info = self.DAMAGE_SEVERITY.get(class_name)
+                    if damage_info is None:
+                        damage_info = self._fallback_damage_info(class_name)
 
                     detection = {
                         "damage_type": class_name,
@@ -240,6 +258,22 @@ class TyreDamageDetector:
 
             crack_pixels, roi_pixels = self._extract_roi_crack_pixels(image, masks)
             rul_data = calculate_rul(crack_pixels, roi_pixels)
+
+            # If detector label mapping is generic, align primary damage severity
+            # with pixel-based RUL severity to avoid static impact values.
+            if highest_severity_damage is not None:
+                label = rul_data["severity_label"].lower()
+                if "minor" in label:
+                    highest_severity_damage["severity"] = "minor"
+                elif "moderate" in label:
+                    highest_severity_damage["severity"] = "moderate"
+                elif "severe" in label:
+                    highest_severity_damage["severity"] = "severe"
+
+                highest_severity_damage["lifespan_reduction"] = min(
+                    1.0,
+                    max(0.0, float(rul_data["severity_percent"]) / 100.0)
+                )
 
             annotated_path = None
             annotated_base64 = None
