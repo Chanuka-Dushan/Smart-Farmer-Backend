@@ -380,6 +380,18 @@ class SavedPaymentMethod(Base):
 # Create the tables automatically
 from models.research import CompatibilityLabel, FeedbackEvent, SalesTransaction, InventoryStock
 from models.part_vector import PartVector
+from models.inventory_models import (
+    InventorySeason,
+    InventoryStage,
+    InventoryMachineCategory,
+    InventoryBrand,
+    InventoryMachineModel,
+    InventoryPart,
+    InventoryModelPartMapping,
+    InventorySeasonalDemandRule,
+    InventoryDemandHistory,
+    InventoryStockTestRecord
+)
 Base.metadata.create_all(bind=engine)
 
 # --- 3. Pydantic Models (Input Validation) ---
