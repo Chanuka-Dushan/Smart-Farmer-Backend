@@ -13,6 +13,13 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_PORT = os.getenv("DB_PORT")
 
 
+def normalize_owner_identifier(value):
+    if value is None:
+        return value
+
+    return str(value).strip().lower()
+
+
 def get_connection():
     return psycopg2.connect(
         host=DB_HOST,
@@ -58,7 +65,7 @@ def save_part_metadata(data):
         data["manufacturer"],
         data["country"],
         data["description"],
-        data["owner"]
+        normalize_owner_identifier(data["owner"])
     ))
 
     conn.commit()
@@ -135,6 +142,32 @@ def get_all_parts():
     return results
 
 
+# -----------------------------------------
+# GET BLOCKCHAIN REGISTERED PARTS
+# -----------------------------------------
+
+def get_blockchain_registered_parts():
+
+    conn = get_connection()
+
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM part_metadata
+        WHERE blockchain_registered = true
+        """
+    )
+
+    results = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    return results if results else []
+
+
 # ------------------------------------------------
 # CREATE TRANSFER REQUEST
 # ------------------------------------------------
@@ -153,7 +186,7 @@ def request_transfer(serial, buyer):
     WHERE serial_number = %s
     """
 
-    cursor.execute(query, (buyer, serial))
+    cursor.execute(query, (normalize_owner_identifier(buyer), serial))
 
     conn.commit()
 
@@ -178,7 +211,7 @@ def get_pending_transfers(owner):
     AND transfer_status = 'PENDING'
     """
 
-    cursor.execute(query, (owner,))
+    cursor.execute(query, (normalize_owner_identifier(owner),))
 
     results = cursor.fetchall()
 
@@ -207,7 +240,7 @@ def approve_transfer(serial, new_owner):
     WHERE serial_number = %s
     """
 
-    cursor.execute(query, (new_owner, serial))
+    cursor.execute(query, (normalize_owner_identifier(new_owner), serial))
 
     conn.commit()
 
