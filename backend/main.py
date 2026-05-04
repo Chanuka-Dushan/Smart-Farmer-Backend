@@ -33,6 +33,7 @@ import json
 from routes.blockchain_routes import router as blockchain_routes
 from routes.parts_routes import router as parts_routes
 from routes.transfer_routes import router as transfer_routes
+from routes.tyre_routes import router as tyre_router
 from routes.vector_admin import router as vector_admin_router
 from routes.recommender import router as recommender_router
 from routes.search import router as search_router
@@ -910,6 +911,18 @@ app.add_middleware(
 app.include_router(blockchain_routes)
 app.include_router(parts_routes)
 app.include_router(transfer_routes)
+# Tyre inspection API
+try:
+    app.include_router(tyre_router, prefix="/api/tyre")
+    # Initialize tyre models once at startup
+    try:
+        from services.tyre_service import get_tyre_service
+        get_tyre_service()
+        logger.info("✓ TyreService initialized at startup")
+    except Exception as e:
+        logger.warning(f"Could not initialize TyreService at startup: {e}")
+except Exception as e:
+    logger.warning(f"Failed to register tyre router: {e}")
 
 
 # --- AI Knowledge Integration ---
