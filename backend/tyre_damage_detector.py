@@ -92,6 +92,124 @@ class TyreDamageDetector:
             logger.error(f"❌ Failed to load YOLO model: {e}")
             self.model_loaded = False
 
+    def _calculate_rul_from_masks(
+        self,
+        image: np.ndarray,
+        masks: Optional[np.ndarray],
+        classification: str = "defect"
+    ) -> Dict:
+        """
+        Calculate Remaining Useful Life (RUL) from YOLO segmentation masks.
+        
+        Steps:
+        1. Create fixed circular ROI mask (tyre region approximation)
+        2. Extract crack pixels from YOLO masks
+        3. Compute severity ratio (crack_pixels / roi_pixels)
+        4. Map severity to RUL using predefined rules
+        
+        Args:
+            image: Input image as numpy array
+            masks: YOLO segmentation masks (None if no damage)
+            classification: "good" or "defect" from EfficientNet
+            
+        Returns:
+            Dict with crack_pixels, roi_pixels, severity_ratio, severity_percent, rul, message
+        """
+        try:
+            h, w = image.shape[:2]
+            logger.info(f"📏 Image size: {w}x{h}")
+            
+            # STEP 1: Create fixed circular ROI mask
+            cx, cy = w / 2, h / 2
+            r = 0.4 * w  # ROI radius
+            
+            y, x = np.ogrid[:h, :w]
+            roi_mask = (x - cx) ** 2 + (y - cy) ** 2 <= r ** 2
+            roi_pixels = np.sum(roi_mask)
+            
+            logger.info(f"   ROI center: ({cx:.1f}, {cy:.1f}), radius: {r:.1f}")
+            logger.info(f"   ROI pixels: {roi_pixels}")
+            
+            # STEP 2 & 3: Handle classification and extract crack pixels
+            if classification.lower() == "good":
+                logger.info("✅ EfficientNet classified: GOOD (no damage)")
+                return {
+                    "crack_pixels": 0,
+                    "roi_pixels": int(roi_pixels),
+                    "severity_ratio": 0.0,
+                    "severity_percent": 0.0,
+                    "rul": "30 months",
+                    "message": "No damage detected - tyre is in good condition"
+                }
+            
+            # Extract crack pixels from YOLO masks
+            crack_pixels = 0
+            if masks is not None and len(masks) > 0:
+                logger.info(f"   Processing {len(masks)} mask(s)")
+                
+                for idx, mask in enumerate(masks):
+                    # Resize mask to image dimensions
+                    if mask.shape != (h, w):
+                        mask_resized = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
+                    else:
+                        mask_resized = mask
+                    
+                    # Threshold to binary
+                    binary_mask = (mask_resized > 0.5).astype(np.uint8)
+                    
+                    # Filter crack pixels inside ROI
+                    crack_in_roi = binary_mask * roi_mask.astype(np.uint8)
+                    crack_pixels += np.sum(crack_in_roi)
+                    
+                    logger.info(f"   Mask {idx}: {np.sum(crack_in_roi)} crack pixels")
+            
+            # STEP 4: Compute severity ratio
+            severity_ratio = crack_pixels / roi_pixels if roi_pixels > 0 else 0.0
+            severity_percent = severity_ratio * 100
+            
+            logger.info(f"   Total crack pixels: {crack_pixels}")
+            logger.info(f"   Severity ratio: {severity_ratio:.4f} ({severity_percent:.2f}%)")
+            
+            # STEP 5: Map severity to RUL
+            if severity_ratio < 0.02:
+                rul = "6–12 months"
+                message = "Minor crack detected - monitor regularly"
+                severity_label = "minor"
+            elif severity_ratio < 0.05:
+                rul = "3–6 months"
+                message = "Moderate crack detected - recommend maintenance soon"
+                severity_label = "moderate"
+            else:
+                rul = "0–3 months"
+                message = "Severe crack detected - replace tyre immediately"
+                severity_label = "severe"
+            
+            result = {
+                "crack_pixels": int(crack_pixels),
+                "roi_pixels": int(roi_pixels),
+                "severity_ratio": round(severity_ratio, 4),
+                "severity_percent": round(severity_percent, 2),
+                "rul": rul,
+                "message": message,
+                "severity_label": severity_label
+            }
+            
+            logger.info(f"   RUL: {rul}")
+            logger.info(f"   Message: {message}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ RUL calculation failed: {e}", exc_info=True)
+            return {
+                "crack_pixels": 0,
+                "roi_pixels": 0,
+                "severity_ratio": 0.0,
+                "severity_percent": 0.0,
+                "rul": "Unknown",
+                "message": f"RUL calculation error: {str(e)}"
+            }
+
     def detect_damage(
         self,
         image_path: str,
@@ -104,23 +222,35 @@ class TyreDamageDetector:
             return self._simulate_detection(image_path)
 
         try:
-
             logger.info(f"🔍 Detecting damage in: {image_path}")
             logger.info(f"   Confidence threshold: {confidence_threshold}")
+
+            # Read image for RUL calculation
+            image = cv2.imread(image_path)
+            if image is None:
+                raise ValueError(f"Failed to read image: {image_path}")
 
             results = self.model(image_path, conf=confidence_threshold, verbose=False)
 
             detections = []
             highest_severity_damage = None
             max_severity_score = 0.0
+            
+            # Extract masks and classification
+            masks = None
+            classification = "good"
 
             for result in results:
-
                 boxes = result.boxes
                 logger.info(f"   Boxes found: {len(boxes)}")
 
-                for box in boxes:
+                # Extract masks if available (segmentation model)
+                if hasattr(result, 'masks') and result.masks is not None:
+                    masks = result.masks.data.cpu().numpy()
+                    logger.info(f"   Segmentation masks found: {masks.shape}")
+                    classification = "defect" if len(masks) > 0 else "good"
 
+                for box in boxes:
                     class_id = int(box.cls[0])
                     confidence = float(box.conf[0])
                     bbox = box.xyxy[0].cpu().numpy().tolist()
@@ -154,6 +284,9 @@ class TyreDamageDetector:
                         max_severity_score = severity_score
                         highest_severity_damage = detection
 
+            # CALCULATE RUL FROM MASKS
+            rul_data = self._calculate_rul_from_masks(image, masks, classification)
+
             annotated_path = None
             annotated_base64 = None
 
@@ -169,11 +302,19 @@ class TyreDamageDetector:
                 "annotated_image_path": annotated_path,
                 "annotated_image_base64": annotated_base64,
                 "model": "YOLOv8 (tyre_seg_best)",
+                # Add RUL calculation data
+                "crack_pixels": rul_data["crack_pixels"],
+                "roi_pixels": rul_data["roi_pixels"],
+                "severity_ratio": rul_data["severity_ratio"],
+                "severity_percent": rul_data["severity_percent"],
+                "rul": rul_data["rul"],
+                "message": rul_data["message"],
                 "timestamp": datetime.utcnow().isoformat()
             }
 
             logger.info(f"✅ Detection complete: {len(detections)} damage(s) found")
             logger.info(f"   Primary damage: {highest_severity_damage['damage_type'] if highest_severity_damage else 'None'}")
+            logger.info(f"   RUL: {rul_data['rul']}")
 
             return response
 
