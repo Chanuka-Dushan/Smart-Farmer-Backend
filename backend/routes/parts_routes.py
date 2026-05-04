@@ -3,7 +3,8 @@ from fastapi import APIRouter, HTTPException
 from utils.parts_repository import (
     save_part_metadata,
     get_part_metadata,
-    get_all_parts
+    get_all_parts,
+    get_blockchain_registered_parts
 )
 
 router = APIRouter(
@@ -28,12 +29,25 @@ def register_part_metadata(data: dict):
             "message": "Part metadata saved"
         }
 
+    except HTTPException:
+        raise
+
     except Exception as e:
 
         raise HTTPException(
             status_code=500,
             detail=str(e)
         )
+
+
+# -----------------------------------------
+# GET BLOCKCHAIN REGISTERED PARTS
+# -----------------------------------------
+
+@router.get("/blockchain-registered")
+def get_registered_parts():
+
+    return get_blockchain_registered_parts()
 
 
 # -----------------------------------------
