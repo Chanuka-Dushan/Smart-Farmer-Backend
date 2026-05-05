@@ -910,6 +910,7 @@ async def get_current_user_or_seller(request: Request, db: Session = Depends(get
 # --- 5. API Endpoints ---
 
 app = FastAPI(
+    root_path=os.getenv("ROOT_PATH", ""),
     swagger_ui_parameters={
         "defaultModelsExpandDepth": -1
     }
