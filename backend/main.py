@@ -61,6 +61,17 @@ try:
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
+#from routes.recommendation import router as recommendation_router
+from routes.vector_admin import router as vector_admin_router
+from routes.recommender import router as recommender_router
+from routes.search import router as search_router
+from routes.comparison import router as comparison_router
+from routes import feedback
+from routes.part_routes import router as part_router
+from routes.inventory import router as inventory_router
+
+from routes import blockchain_routes
+
 
 DISABLE_PART_IDENTIFICATION = False
 
@@ -909,6 +920,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+
+app.include_router(blockchain_routes.router)
 
 #from routes.recommendation import router as recommendation_router
 
