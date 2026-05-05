@@ -4,7 +4,8 @@ from utils.parts_repository import (
     request_transfer,
     get_pending_transfers,
     approve_transfer,
-    get_part_metadata
+    get_part_metadata,
+    normalize_owner_identifier
 )
 
 from utils.blockchain_service import transfer_part
@@ -25,7 +26,7 @@ def request_transfer_route(data: dict):
     try:
 
         serial = data["serialNumber"]
-        buyer = data["buyer"]
+        buyer = normalize_owner_identifier(data["buyer"])
 
         part = get_part_metadata(serial)
 
@@ -35,7 +36,7 @@ def request_transfer_route(data: dict):
                 detail="Part not found"
             )
 
-        seller = part["current_owner"]
+        seller = normalize_owner_identifier(part["current_owner"])
 
         if seller == buyer:
             raise HTTPException(
@@ -52,6 +53,9 @@ def request_transfer_route(data: dict):
             "seller": seller,
             "requestedBuyer": buyer
         }
+
+    except HTTPException:
+        raise
 
     except Exception as e:
         raise HTTPException(
@@ -73,6 +77,9 @@ def pending_requests(seller: str):
 
         return requests
 
+    except HTTPException:
+        raise
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -90,7 +97,7 @@ def approve_transfer_route(data: dict):
     try:
 
         serial = data["serialNumber"]
-        new_owner = data["buyer"]
+        new_owner = normalize_owner_identifier(data["buyer"])
 
         part = get_part_metadata(serial)
 
@@ -104,6 +111,14 @@ def approve_transfer_route(data: dict):
             raise HTTPException(
                 status_code=400,
                 detail="No pending transfer request"
+            )
+
+        requested_owner = normalize_owner_identifier(part.get("requested_new_owner"))
+
+        if requested_owner and requested_owner != new_owner:
+            raise HTTPException(
+                status_code=400,
+                detail="Buyer does not match the pending transfer request"
             )
 
         # Execute blockchain transfer
@@ -120,6 +135,9 @@ def approve_transfer_route(data: dict):
             "newOwner": new_owner,
             "txHash": tx_hash
         }
+
+    except HTTPException:
+        raise
 
     except Exception as e:
         raise HTTPException(

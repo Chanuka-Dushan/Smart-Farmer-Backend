@@ -13,7 +13,8 @@ from utils.qr_jwt_service import verify_qr_token
 
 from utils.parts_repository import (
     update_blockchain_registration,
-    get_part_metadata
+    get_part_metadata,
+    normalize_owner_identifier
 )
 
 router = APIRouter(
@@ -57,8 +58,15 @@ def register_blockchain(data: dict):
                 detail="Metadata must be registered first"
             )
 
+        blockchain_payload = dict(data)
+
+        if "owner" in blockchain_payload:
+            blockchain_payload["owner"] = normalize_owner_identifier(
+                blockchain_payload["owner"]
+            )
+
         # Register part in blockchain
-        result = register_part(data)
+        result = register_part(blockchain_payload)
 
         tx_hash = result["tx_hash"]
 
@@ -72,6 +80,9 @@ def register_blockchain(data: dict):
             qr_image,
             media_type="image/png"
         )
+
+    except HTTPException:
+        raise
 
     except Exception as e:
 
@@ -107,6 +118,9 @@ def verify_blockchain_part(serial: str):
             "blockchainData": blockchain_data,
             "metadata": metadata
         }
+
+    except HTTPException:
+        raise
 
     except Exception as e:
 
@@ -156,6 +170,9 @@ def verify_qr(request: QRVerifyRequest):
             "metadata": metadata
         }
 
+    except HTTPException:
+        raise
+
     except Exception as e:
 
         raise HTTPException(
@@ -176,16 +193,19 @@ def transfer_ownership(request: TransferRequest):
 
         result = transfer_part(
             request.serialNumber,
-            request.newOwner
+            normalize_owner_identifier(request.newOwner)
         )
 
         return {
             "status": "SUCCESS",
             "message": "Ownership transferred",
             "serialNumber": request.serialNumber,
-            "newOwner": request.newOwner,
+            "newOwner": normalize_owner_identifier(request.newOwner),
             "txHash": result
         }
+
+    except HTTPException:
+        raise
 
     except Exception as e:
 
