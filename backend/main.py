@@ -39,7 +39,6 @@ from routes.recommender import router as recommender_router
 from routes.search import router as search_router
 from routes.comparison import router as comparison_router 
 from routes import feedback
-from routes.comparison import router as comparison_router 
 from routes.part_routes import router as part_router
 
 from routes.inventory import router as inventory_router
@@ -61,17 +60,6 @@ try:
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
-#from routes.recommendation import router as recommendation_router
-from routes.vector_admin import router as vector_admin_router
-from routes.recommender import router as recommender_router
-from routes.search import router as search_router
-from routes.comparison import router as comparison_router
-from routes import feedback
-from routes.part_routes import router as part_router
-from routes.inventory import router as inventory_router
-
-from routes import blockchain_routes
-
 
 DISABLE_PART_IDENTIFICATION = False
 
@@ -922,12 +910,11 @@ app.add_middleware(
 
 
 
-app.include_router(blockchain_routes.router)
-
 #from routes.recommendation import router as recommendation_router
 
 #app.include_router(recommendation_router)
 
+app.include_router(blockchain_routes)
 app.include_router(vector_admin_router)
 app.include_router(recommender_router)
 app.include_router(search_router)
@@ -936,9 +923,6 @@ app.include_router(feedback.router)
 app.include_router(part_router)
 app.include_router(inventory_router)
 app.include_router(rf_test_router)
-
-
-app.include_router(blockchain_routes)
 app.include_router(parts_routes)
 app.include_router(transfer_routes)
 # Tyre inspection API
